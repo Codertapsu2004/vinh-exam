@@ -1,0 +1,40 @@
+const JSZipV5 = require('jszip');
+
+const decodeXmlV5 = s => String(s||'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&apos;/g,"'");
+const stripOmmlV5 = s => decodeXmlV5(String(s||'').replace(/<m:t[^>]*>([\s\S]*?)<\/m:t>/g,'$1').replace(/<[^>]+>/g,''));
+function ommlToLatexV5(input){
+  let s=String(input||'');
+  const recur=x=>ommlToLatexV5(x);
+  let prev='';
+  for(let pass=0;pass<8 && s!==prev;pass++){
+    prev=s;
+    s=s.replace(/<m:f\b[\s\S]*?<m:num\b[^>]*>([\s\S]*?)<\/m:num>[\s\S]*?<m:den\b[^>]*>([\s\S]*?)<\/m:den>[\s\S]*?<\/m:f>/g,(_,a,b)=>`\\frac{${recur(a)}}{${recur(b)}}`);
+    s=s.replace(/<m:sSup\b[\s\S]*?<m:e\b[^>]*>([\s\S]*?)<\/m:e>[\s\S]*?<m:sup\b[^>]*>([\s\S]*?)<\/m:sup>[\s\S]*?<\/m:sSup>/g,(_,a,b)=>`${recur(a)}^{${recur(b)}}`);
+    s=s.replace(/<m:sSub\b[\s\S]*?<m:e\b[^>]*>([\s\S]*?)<\/m:e>[\s\S]*?<m:sub\b[^>]*>([\s\S]*?)<\/m:sub>[\s\S]*?<\/m:sSub>/g,(_,a,b)=>`${recur(a)}_{${recur(b)}}`);
+    s=s.replace(/<m:sSubSup\b[\s\S]*?<m:e\b[^>]*>([\s\S]*?)<\/m:e>[\s\S]*?<m:sub\b[^>]*>([\s\S]*?)<\/m:sub>[\s\S]*?<m:sup\b[^>]*>([\s\S]*?)<\/m:sup>[\s\S]*?<\/m:sSubSup>/g,(_,a,b,c)=>`${recur(a)}_{${recur(b)}}^{${recur(c)}}`);
+    s=s.replace(/<m:rad\b[\s\S]*?<m:e\b[^>]*>([\s\S]*?)<\/m:e>[\s\S]*?<\/m:rad>/g,(_,a)=>`\\sqrt{${recur(a)}}`);
+  }
+  return stripOmmlV5(s).replace(/\s+/g,' ').trim();
+}
+function pdfMathCandidatesV5(text){
+  return String(text||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean).filter(line=>{
+    const ops=(line.match(/[=±√∑∫∞≈≠≤≥×÷^]/g)||[]).length;
+    return ops>=1 || /[α-ωΑ-Ω]|\b(?:sin|cos|tan|cot|log|ln)\b/i.test(line) || /[A-Za-z]\s*=\s*[-+]?\d/.test(line);
+  }).slice(0,100).map((latex,i)=>({id:'pdf-'+(i+1),latex,source:'pdf-text',confidence:'low'}));
+}
+
+app.get('/api/teacher/imports/:id/formulas', auth, role('teacher'), async(req,res,next)=>{try{
+  const row=(await q(`SELECT j.id,j.kind,j.extracted_text,a.data FROM import_jobs j JOIN assets a ON a.id=j.asset_id WHERE j.id=$1 AND j.owner_id=$2`,[req.params.id,req.user.id])).rows[0];
+  if(!row)return res.status(404).json({message:'Không tìm thấy tác vụ nhập'});
+  let items=[];
+  if(row.kind==='docx'){
+    const zip=await JSZipV5.loadAsync(row.data);
+    const doc=zip.file('word/document.xml');
+    if(doc){
+      const xml=await doc.async('string');
+      const blocks=xml.match(/<m:oMath\b[\s\S]*?<\/m:oMath>/g)||[];
+      items=blocks.map((b,i)=>({id:'word-'+(i+1),latex:ommlToLatexV5(b),source:'word-omml',confidence:'medium'})).filter(x=>x.latex).slice(0,100);
+    }
+  } else if(row.kind==='pdf') items=pdfMathCandidatesV5(row.extracted_text);
+  res.json({items,note:row.kind==='docx'?'Công thức Word được chuyển đổi best-effort từ OMML. Hãy rà soát công thức phức tạp trước khi xuất bản.':row.kind==='pdf'?'PDF chỉ có thể nhận diện công thức từ text layer; PDF scan cần OCR chuyên dụng.':''});
+}catch(e){next(e)}});
