@@ -41,10 +41,10 @@ if (!code.includes(migrationMarker)) throw new Error('VINH EXAM extras: migratio
 const escapedMigration = migrationSql.replaceAll('`','\\`');
 code = code.replace(migrationMarker, '  await q(`'+escapedMigration+'`);\n'+migrationMarker);
 
-const extraRoutes = fs.readFileSync(path.join(__dirname,'server-extra-routes.jsfrag'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'server-v3-routes.jsfrag'),'utf8');
+const extraRoutes = fs.readFileSync(path.join(__dirname,'server-extra-routes.jsfrag'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'server-v3-routes.jsfrag'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'server-v4-routes.jsfrag'),'utf8');
 const routeMarker = "app.get('/api/health', (req,res) => res.json({ok:true,service:'vinh-exam-v2',time:new Date().toISOString()}));";
 if (!code.includes(routeMarker)) throw new Error('VINH EXAM extras: route marker not found');
-code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker.replace("vinh-exam-v2","vinh-exam-v3"));
+code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker.replace("vinh-exam-v2","vinh-exam-v4"));
 
 const m = new Module(target, module.parent);
 m.filename = target;
