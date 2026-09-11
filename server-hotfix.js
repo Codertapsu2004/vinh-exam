@@ -35,16 +35,16 @@ const newGrade = `app.post('/api/teacher/grade/:id', auth, role('teacher'), asyn
 if (!code.includes(oldGrade)) throw new Error('VINH EXAM hotfix: grading patch target not found');
 code = code.replace(oldGrade, newGrade);
 
-const migrationSql = fs.readFileSync(path.join(__dirname,'server-extra-migration.sql'),'utf8');
+const migrationSql = fs.readFileSync(path.join(__dirname,'server-extra-migration.sql'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'server-v3-migration.sql'),'utf8');
 const migrationMarker = "  if (process.env.SEED_ON_BOOT === 'true') await seed();";
 if (!code.includes(migrationMarker)) throw new Error('VINH EXAM extras: migration marker not found');
 const escapedMigration = migrationSql.replaceAll('`','\\`');
 code = code.replace(migrationMarker, '  await q(`'+escapedMigration+'`);\n'+migrationMarker);
 
-const extraRoutes = fs.readFileSync(path.join(__dirname,'server-extra-routes.jsfrag'),'utf8');
+const extraRoutes = fs.readFileSync(path.join(__dirname,'server-extra-routes.jsfrag'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'server-v3-routes.jsfrag'),'utf8');
 const routeMarker = "app.get('/api/health', (req,res) => res.json({ok:true,service:'vinh-exam-v2',time:new Date().toISOString()}));";
 if (!code.includes(routeMarker)) throw new Error('VINH EXAM extras: route marker not found');
-code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker);
+code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker.replace("vinh-exam-v2","vinh-exam-v3"));
 
 const m = new Module(target, module.parent);
 m.filename = target;
