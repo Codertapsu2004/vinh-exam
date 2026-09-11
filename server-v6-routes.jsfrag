@@ -1,0 +1,134 @@
+function sectionKindV6(title=''){
+  const s=String(title).toLowerCase();
+  if(/đúng\s*[-–]?\s*sai|dung\s*[-–]?\s*sai|true\s*[-–]?\s*false/.test(s)) return 'tf';
+  if(/trả\s*lời\s*ngắn|tra\s*loi\s*ngan|điền|dien|short\s*answer/.test(s)) return 'number';
+  if(/tự\s*luận|tu\s*luan|essay/.test(s)) return 'essay';
+  if(/trắc\s*nghiệm|trac\s*nghiem|nhiều\s*lựa\s*chọn|multiple\s*choice/.test(s)) return 'single';
+  return 'mixed';
+}
+function parseBoolAnswerV6(raw=''){
+  const t=String(raw).replace(/[;,|/]/g,' ').split(/\s+/).map(x=>x.trim()).filter(Boolean);
+  const vals=[];
+  for(const x0 of t){const x=x0.toLowerCase();if(/^(đ|d|đúng|dung|true|t)$/.test(x))vals.push(true);else if(/^(s|sai|false|f)$/.test(x))vals.push(false)}
+  return vals;
+}
+function parseNumberV6(raw=''){
+  const m=String(raw).replace(/,/g,'.').match(/[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?/i);return m?Number(m[0]):null;
+}
+function parseExamStructureV6(text=''){
+  const clean=String(text||'').replace(/\r/g,'').replace(/\u00a0/g,' ').replace(/[ \t]+\n/g,'\n').trim();
+  const lines=clean.split('\n').map(x=>x.trim()).filter(Boolean);
+  const answerKey={};
+  for(const line of lines){
+    const pairs=[...line.matchAll(/(?:^|\s)(\d{1,3})\s*[.\-:]?\s*([A-H])(?=\s|$|[,;])/gi)];
+    if(/đáp\s*án|dap\s*an|answer\s*key/i.test(line)||pairs.length>=3) for(const m of pairs)answerKey[Number(m[1])]=m[2].toUpperCase();
+  }
+  const sections=[]; let current=null, qbuf=null; const questions=[];
+  const ensureSection=(title='Phần I. Câu hỏi',kind='mixed')=>{if(current)return current;current={id:'sec-'+(sections.length+1),title,kind,questionIds:[],points:0};sections.push(current);return current};
+  const sectionMatch=line=>{
+    let m=line.match(/^(?:PHẦN|Phần|PART|Part|NHÓM|Nhóm|GROUP|Group)\s+([IVXLCDM]+|\d+)\s*[.):\-–]?\s*(.*)$/i);
+    if(m)return {title:line,kind:sectionKindV6(line)};
+    m=line.match(/^([IVXLCDM]+)\.\s+(.+)$/i);
+    if(m&&/(trắc|dung|đúng|sai|ngắn|tự\s*luận|multiple|true|short|essay)/i.test(line))return {title:line,kind:sectionKindV6(line)};
+    return null;
+  };
+  const qStart=line=>line.match(/^(?:Câu|Bài|Question)\s*(\d{1,3})\s*[.):\-–]?\s*(.*)$/i);
+  const flush=()=>{
+    if(!qbuf)return;
+    const sec=qbuf.section||ensureSection(); const raws=qbuf.lines; const body=[]; const upper=[], lower=[]; let localAnswer='';
+    for(const line of raws){
+      let m=line.match(/^([A-H])\s*[.):\-]\s*(.+)$/);if(m){upper.push({k:m[1],v:m[2].trim()});continue}
+      m=line.match(/^([a-d])\s*[).:\-]\s*(.+)$/);if(m){lower.push({k:m[1],v:m[2].trim()});continue}
+      m=line.match(/^(?:Đáp\s*án|Dap\s*an|ĐA|Answer)\s*[:\-]\s*(.+)$/i);if(m){localAnswer=m[1].trim();continue}
+      body.push(line);
+    }
+    let type=sec.kind, confidence='medium';
+    if(upper.length>=2){type='single';confidence='high'}
+    else if((sec.kind==='tf'&&lower.length>=2)||lower.length>=4){type='tf';confidence=lower.length>=4?'high':'medium'}
+    else if(sec.kind==='number'||parseNumberV6(localAnswer)!==null){type='number';confidence=localAnswer?'high':'medium'}
+    else if(sec.kind==='essay'){type='essay';confidence='high'}
+    else {type='essay';confidence='low'}
+    const textOut=[qbuf.lead,...body].filter(Boolean).join('\n').trim()||`Câu ${qbuf.no}`;
+    const item={id:uuid(),questionNo:qbuf.no,sectionId:sec.id,type,text:textOut,points:1,explanation:'',confidence,source:'pdf-structure-v6'};
+    if(type==='single'){
+      item.options=upper.map(x=>x.v);const letter=(localAnswer.match(/[A-H]/i)?.[0]||answerKey[qbuf.no]||'').toUpperCase();item.answer=letter?'ABCDEFGH'.indexOf(letter):null;
+      if(item.answer===null||item.answer<0)item.answer=null;
+    }else if(type==='tf'){
+      item.statements=lower.map(x=>x.v);const vals=parseBoolAnswerV6(localAnswer);item.answer=item.statements.map((_,i)=>vals[i]??null);
+    }else if(type==='number'){
+      item.answer=parseNumberV6(localAnswer);item.tolerance=0;
+    }
+    sec.questionIds.push(item.id);questions.push(item);qbuf=null;
+  };
+  for(const line of lines){
+    const sm=sectionMatch(line);if(sm){flush();current={id:'sec-'+(sections.length+1),title:sm.title,kind:sm.kind,questionIds:[],points:0};sections.push(current);continue}
+    const qm=qStart(line);if(qm){flush();qbuf={no:Number(qm[1]),lead:(qm[2]||'').trim(),lines:[],section:ensureSection()};continue}
+    if(qbuf)qbuf.lines.push(line);
+  }
+  flush();
+  const nonempty=sections.filter(s=>s.questionIds.length); if(nonempty.length!==sections.length){sections.splice(0,sections.length,...nonempty)}
+  if(!sections.length&&questions.length){sections.push({id:'sec-1',title:'Phần I. Câu hỏi',kind:'mixed',questionIds:questions.map(q=>q.id),points:questions.length})}
+  for(const sec of sections){sec.points=sec.questionIds.reduce((s,id)=>s+Number(questions.find(q=>q.id===id)?.points||0),0);if(sec.kind==='mixed'){const ks=[...new Set(questions.filter(q=>q.sectionId===sec.id).map(q=>q.type))];if(ks.length===1)sec.kind=ks[0]}}
+  return {questions:questions.slice(0,300),sections,meta:{lines:lines.length,questionCount:questions.length,sectionCount:sections.length,answerKeyCount:Object.keys(answerKey).length,analyzer:'structure-v6'}};
+}
+
+app.post('/api/teacher/imports/:id/analyze-v6',auth,role('teacher'),async(req,res,next)=>{try{
+  const item=(await q(`SELECT * FROM import_jobs WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id])).rows[0];if(!item)return res.status(404).json({message:'Không tìm thấy tác vụ nhập'});
+  if(Number(item.analysis_version)>=6&&!req.body.force)return res.json({item,questions:item.draft_questions||[],sections:item.sections||[],meta:item.analysis_meta||{}});
+  if(!String(item.extracted_text||'').trim())return res.status(400).json({message:'Tệp không có lớp văn bản để phân tích. PDF scan cần OCR trước khi phân loại tự động.'});
+  const out=parseExamStructureV6(item.extracted_text);
+  const warnings=Array.isArray(item.warnings)?[...item.warnings]:[];
+  if(out.questions.some(x=>x.confidence==='low'))warnings.push('Một số câu có độ tin cậy nhận diện thấp; hãy kiểm tra loại câu trước khi tạo đề.');
+  const updated=(await q(`UPDATE import_jobs SET draft_questions=$1,sections=$2,analysis_version=6,analysis_meta=$3,warnings=$4,updated_at=now() WHERE id=$5 RETURNING *`,[JSON.stringify(out.questions),JSON.stringify(out.sections),JSON.stringify(out.meta),JSON.stringify([...new Set(warnings)]),item.id])).rows[0];
+  await audit(req.user.id,'import.analyzed_v6',{importId:item.id,...out.meta});res.json({item:updated,questions:out.questions,sections:out.sections,meta:out.meta});
+}catch(e){next(e)}});
+
+app.post('/api/teacher/imports/:id/review-v6',auth,role('teacher'),async(req,res,next)=>{try{
+  const item=(await q(`SELECT id FROM import_jobs WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id])).rows[0];if(!item)return res.status(404).json({message:'Không tìm thấy tác vụ nhập'});
+  const questions=(Array.isArray(req.body.questions)?req.body.questions:[]).slice(0,300).map((x,i)=>({...x,id:x.id||uuid(),points:Math.max(0,Number(x.points||0)),text:String(x.text||`Câu ${i+1}`).slice(0,20000)}));
+  const ids=new Set(questions.map(x=>x.id));const sections=(Array.isArray(req.body.sections)?req.body.sections:[]).slice(0,30).map((s,i)=>({id:String(s.id||`sec-${i+1}`),title:String(s.title||`Phần ${i+1}`).slice(0,500),kind:String(s.kind||'mixed'),points:Math.max(0,Number(s.points||0)),questionIds:(Array.isArray(s.questionIds)?s.questionIds:[]).filter(id=>ids.has(id))}));
+  await q(`UPDATE import_jobs SET draft_questions=$1,sections=$2,updated_at=now() WHERE id=$3`,[JSON.stringify(questions),JSON.stringify(sections),item.id]);await audit(req.user.id,'import.review_saved_v6',{importId:item.id,questions:questions.length,sections:sections.length});res.json({ok:true});
+}catch(e){next(e)}});
+
+app.post('/api/teacher/imports/:id/create-exam-v6',auth,role('teacher'),async(req,res,next)=>{try{
+  const item=(await q(`SELECT * FROM import_jobs WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id])).rows[0];if(!item)return res.status(404).json({message:'Không tìm thấy tác vụ nhập'});
+  const questions=(Array.isArray(req.body.questions)?req.body.questions:item.draft_questions||[]).slice(0,300);if(!questions.length)return res.status(400).json({message:'Chưa có câu hỏi để tạo đề'});
+  const sections=Array.isArray(req.body.sections)?req.body.sections:item.sections||[];const max=+questions.reduce((s,x)=>s+Math.max(0,Number(x.points||0)),0).toFixed(4);
+  const exam=(await q(`INSERT INTO exams(title,subject,duration,max_score,questions,sections,owner_id,status,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,'draft',now()) RETURNING *`,[String(req.body.title||item.original_name.replace(/\.[^.]+$/,'')).trim(),String(req.body.subject||''),Math.max(1,Number(req.body.duration||45)),max||10,JSON.stringify(questions),JSON.stringify(sections),req.user.id])).rows[0];
+  await q(`UPDATE import_jobs SET draft_questions=$1,sections=$2,updated_at=now() WHERE id=$3`,[JSON.stringify(questions),JSON.stringify(sections),item.id]);await audit(req.user.id,'import.exam_created_v6',{importId:item.id,examId:exam.id,maxScore:max,sections:sections.length});res.json({exam});
+}catch(e){next(e)}});
+
+function normalizeProctorV6(raw={}){
+  const mode=['off','monitor','strict'].includes(raw.mode)?raw.mode:'off';
+  if(mode==='off')return {mode:'off',monitorTab:false,requireFullscreen:false,blockCopy:false,blockPaste:false,blockContextMenu:false,warnStudent:false};
+  if(mode==='monitor')return {mode,monitorTab:true,requireFullscreen:!!raw.requireFullscreen,blockCopy:!!raw.blockCopy,blockPaste:!!raw.blockPaste,blockContextMenu:!!raw.blockContextMenu,warnStudent:true};
+  return {mode:'strict',monitorTab:true,requireFullscreen:true,blockCopy:raw.blockCopy!==false,blockPaste:raw.blockPaste!==false,blockContextMenu:raw.blockContextMenu!==false,warnStudent:true};
+}
+app.post('/api/teacher/assignments/:id/proctor',auth,role('teacher'),async(req,res,next)=>{try{
+  const own=(await q(`SELECT a.id FROM assignments a JOIN classes c ON c.id=a.class_id WHERE a.id=$1 AND c.teacher_id=$2`,[req.params.id,req.user.id])).rows[0];if(!own)return res.status(404).json({message:'Không tìm thấy ca thi'});
+  const cfg=normalizeProctorV6(req.body||{});const row=(await q(`UPDATE assignments SET proctor_config=$1 WHERE id=$2 RETURNING *`,[JSON.stringify(cfg),own.id])).rows[0];await audit(req.user.id,'assignment.proctor_updated',{assignmentId:own.id,mode:cfg.mode});res.json({assignment:row,config:cfg});
+}catch(e){next(e)}});
+app.get('/api/student/attempt/:id/proctor',auth,role('student'),async(req,res,next)=>{try{
+  const row=(await q(`SELECT at.id,at.status,a.proctor_config FROM attempts at JOIN assignments a ON a.id=at.assignment_id WHERE at.id=$1 AND at.student_id=$2`,[req.params.id,req.user.id])).rows[0];if(!row)return res.status(404).json({message:'Không tìm thấy lượt thi'});res.json({config:normalizeProctorV6(row.proctor_config||{}),status:row.status});
+}catch(e){next(e)}});
+const proctorEventTypesV6=new Set(['visibility_hidden','visibility_visible','window_blur','window_focus','fullscreen_exit','fullscreen_enter','copy','paste','contextmenu']);
+app.post('/api/student/attempt/:id/proctor-events',auth,role('student'),async(req,res,next)=>{try{
+  const row=(await q(`SELECT at.id,at.status,a.proctor_config FROM attempts at JOIN assignments a ON a.id=at.assignment_id WHERE at.id=$1 AND at.student_id=$2`,[req.params.id,req.user.id])).rows[0];if(!row)return res.status(404).json({message:'Không tìm thấy lượt thi'});const cfg=normalizeProctorV6(row.proctor_config||{});if(cfg.mode==='off')return res.json({ok:true,ignored:true});
+  const type=String(req.body.type||'');if(!proctorEventTypesV6.has(type))return res.status(400).json({message:'Sự kiện giám sát không hợp lệ'});
+  const recent=(await q(`SELECT 1 FROM attempt_events WHERE attempt_id=$1 AND event_type=$2 AND created_at>now()-interval '1 second' LIMIT 1`,[row.id,type])).rowCount;if(recent)return res.json({ok:true,dedup:true});
+  const warn=new Set(['visibility_hidden','window_blur','fullscreen_exit','copy','paste','contextmenu']);const severity=warn.has(type)?'warning':'info';const meta={mode:cfg.mode,fullscreen:!!req.body.fullscreen,hidden:!!req.body.hidden,viewport:String(req.body.viewport||'').slice(0,60)};
+  const ev=(await q(`INSERT INTO attempt_events(attempt_id,event_type,severity,meta) VALUES($1,$2,$3,$4) RETURNING id,created_at`,[row.id,type,severity,JSON.stringify(meta)])).rows[0];res.json({ok:true,event:ev});
+}catch(e){next(e)}});
+
+async function monitorPayloadV6(assignmentId,teacherId){
+  const own=(await q(`SELECT a.id,a.class_id,a.proctor_config,c.name class_name,e.title exam_title,jsonb_array_length(e.questions)::int total_questions FROM assignments a JOIN classes c ON c.id=a.class_id JOIN exams e ON e.id=a.exam_id WHERE a.id=$1 AND c.teacher_id=$2`,[assignmentId,teacherId])).rows[0];if(!own)return null;
+  await finalizeExpiredAttempts();
+  const attempts=(await q(`SELECT u.id student_id,u.name,u.login,at.id attempt_id,COALESCE(at.status,'not_started') status,at.started_at,at.deadline_at,at.last_saved_at,at.score,CASE WHEN at.id IS NULL THEN 0 ELSE (SELECT count(*)::int FROM jsonb_object_keys(COALESCE(at.answers,'{}'::jsonb))) END answered,CASE WHEN at.id IS NULL THEN 0 ELSE (SELECT count(*)::int FROM attempt_events ev WHERE ev.attempt_id=at.id AND ev.severity='warning') END violations,(SELECT ev.event_type FROM attempt_events ev WHERE ev.attempt_id=at.id ORDER BY ev.created_at DESC LIMIT 1) last_event,(SELECT ev.created_at FROM attempt_events ev WHERE ev.attempt_id=at.id ORDER BY ev.created_at DESC LIMIT 1) last_event_at FROM enrollments en JOIN users u ON u.id=en.student_id LEFT JOIN attempts at ON at.assignment_id=$1 AND at.student_id=u.id WHERE en.class_id=$2 ORDER BY u.name`,[own.id,own.class_id])).rows;
+  const events=(await q(`SELECT ev.id,ev.event_type,ev.severity,ev.created_at,u.name,u.login FROM attempt_events ev JOIN attempts at ON at.id=ev.attempt_id JOIN users u ON u.id=at.student_id WHERE at.assignment_id=$1 ORDER BY ev.created_at DESC LIMIT 60`,[own.id])).rows;
+  return {assignment:{...own,proctor_config:normalizeProctorV6(own.proctor_config||{})},attempts,events,serverTime:new Date().toISOString()};
+}
+app.get('/api/teacher/monitor/:id/stream-v6',auth,role('teacher'),async(req,res,next)=>{try{
+  const first=await monitorPayloadV6(req.params.id,req.user.id);if(!first)return res.status(403).end();res.setHeader('Content-Type','text/event-stream');res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');res.flushHeaders?.();let closed=false;
+  const send=async()=>{if(closed)return;try{const d=await monitorPayloadV6(req.params.id,req.user.id);if(d)res.write(`data: ${JSON.stringify(d)}\n\n`)}catch{}};await send();const timer=setInterval(send,2000);req.on('close',()=>{closed=true;clearInterval(timer)});
+}catch(e){next(e)}});
+app.get('/api/teacher/assignments/:id/proctor-report',auth,role('teacher'),async(req,res,next)=>{try{const d=await monitorPayloadV6(req.params.id,req.user.id);if(!d)return res.status(404).json({message:'Không tìm thấy ca thi'});res.json(d)}catch(e){next(e)}});
