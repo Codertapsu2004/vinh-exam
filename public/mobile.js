@@ -1,0 +1,2 @@
+function toggleMobileNav(force){const side=document.querySelector('.sidebar'),scrim=document.getElementById('mobileScrim');if(!side||!scrim)return;const open=typeof force==='boolean'?force:!side.classList.contains('open');side.classList.toggle('open',open);scrim.classList.toggle('open',open)}
+document.addEventListener('click',e=>{if(window.innerWidth<=820&&e.target.closest('.nav-btn'))toggleMobileNav(false)});
