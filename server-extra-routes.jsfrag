@@ -1,0 +1,53 @@
+const cleanExtra = v => String(v ?? '').trim();
+async function notifyExtra(userId,title,message,type='info',meta={}){ if(!userId)return; await q(`INSERT INTO notifications(user_id,title,message,type,meta) VALUES($1,$2,$3,$4,$5)`,[userId,title,message,type,meta]); }
+
+app.post('/api/auth/change-password', auth, async (req,res,next)=>{try{
+  const current=String(req.body.currentPassword||''), nextPwd=String(req.body.newPassword||'');
+  if(nextPwd.length<8)return res.status(400).json({message:'Mật khẩu mới tối thiểu 8 ký tự'});
+  const u=(await q(`SELECT password_hash FROM users WHERE id=$1`,[req.user.id])).rows[0];
+  if(!u||!await bcrypt.compare(current,u.password_hash))return res.status(400).json({message:'Mật khẩu hiện tại không đúng'});
+  await q(`UPDATE users SET password_hash=$1 WHERE id=$2`,[await bcrypt.hash(nextPwd,12),req.user.id]);
+  await q(`DELETE FROM sessions WHERE user_id=$1 AND id<>$2`,[req.user.id,req.user.session_id]);
+  await audit(req.user.id,'auth.password_changed'); res.json({ok:true});
+}catch(e){next(e)}});
+
+app.get('/api/notifications', auth, async(req,res,next)=>{try{res.json({items:(await q(`SELECT * FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`,[req.user.id])).rows})}catch(e){next(e)}});
+app.post('/api/notifications/:id/read', auth, async(req,res,next)=>{try{await q(`UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND user_id=$2`,[req.params.id,req.user.id]);res.json({ok:true})}catch(e){next(e)}});
+app.post('/api/notifications/read-all', auth, async(req,res,next)=>{try{await q(`UPDATE notifications SET read_at=COALESCE(read_at,now()) WHERE user_id=$1`,[req.user.id]);res.json({ok:true})}catch(e){next(e)}});
+
+app.patch('/api/teacher/classes/:id', auth, role('teacher'), async(req,res,next)=>{try{
+  const row=(await q(`UPDATE classes SET name=COALESCE(NULLIF($1,''),name),subject=COALESCE($2,subject),status=COALESCE($3,status) WHERE id=$4 AND teacher_id=$5 RETURNING *`,[cleanExtra(req.body.name),req.body.subject===undefined?null:cleanExtra(req.body.subject),req.body.status||null,req.params.id,req.user.id])).rows[0];
+  if(!row)return res.status(404).json({message:'Không tìm thấy lớp'});await audit(req.user.id,'class.updated',{classId:row.id,status:row.status});res.json({class:row});
+}catch(e){next(e)}});
+app.post('/api/teacher/classes/:classId/students/:studentId/reset-password', auth, role('teacher'), async(req,res,next)=>{try{
+  const cls=await ownedClass(req.params.classId,req.user.id); if(!cls)return res.status(404).json({message:'Không tìm thấy lớp'});
+  const exists=(await q(`SELECT 1 FROM enrollments WHERE class_id=$1 AND student_id=$2`,[cls.id,req.params.studentId])).rowCount;if(!exists)return res.status(404).json({message:'Học sinh không thuộc lớp'});
+  const pwd=String(req.body.password||'');if(pwd.length<8)return res.status(400).json({message:'Mật khẩu tối thiểu 8 ký tự'});
+  await q(`UPDATE users SET password_hash=$1 WHERE id=$2 AND role='student'`,[await bcrypt.hash(pwd,12),req.params.studentId]);await q(`DELETE FROM sessions WHERE user_id=$1`,[req.params.studentId]);await audit(req.user.id,'student.password_reset',{classId:cls.id,studentId:req.params.studentId});res.json({ok:true});
+}catch(e){next(e)}});
+
+app.patch('/api/teacher/assignments/:id', auth, role('teacher'), async(req,res,next)=>{try{
+  const own=(await q(`SELECT a.* FROM assignments a JOIN classes c ON c.id=a.class_id WHERE a.id=$1 AND c.teacher_id=$2`,[req.params.id,req.user.id])).rows[0];if(!own)return res.status(404).json({message:'Không tìm thấy ca thi'});
+  const open=req.body.openAt?new Date(req.body.openAt):own.open_at, close=req.body.closeAt?new Date(req.body.closeAt):own.close_at;if(!(close>open))return res.status(400).json({message:'Thời gian đóng phải sau thời gian mở'});
+  const row=(await q(`UPDATE assignments SET title=$1,open_at=$2,close_at=$3,duration=$4 WHERE id=$5 RETURNING *`,[cleanExtra(req.body.title)||own.title,open,close,Number(req.body.duration||own.duration),own.id])).rows[0];await audit(req.user.id,'assignment.updated',{assignmentId:own.id});res.json({assignment:row});
+}catch(e){next(e)}});
+app.post('/api/teacher/attempt/:id/extend', auth, role('teacher'), async(req,res,next)=>{try{
+  const minutes=Math.max(1,Math.min(180,Number(req.body.minutes||5)));
+  const row=(await q(`UPDATE attempts at SET deadline_at=deadline_at+($1||' minutes')::interval FROM assignments a,classes c WHERE at.id=$2 AND a.id=at.assignment_id AND c.id=a.class_id AND c.teacher_id=$3 AND at.status='in_progress' RETURNING at.id,at.deadline_at`,[minutes,req.params.id,req.user.id])).rows[0];if(!row)return res.status(404).json({message:'Không tìm thấy lượt thi đang làm'});await audit(req.user.id,'attempt.extended',{attemptId:row.id,minutes});res.json({attempt:row});
+}catch(e){next(e)}});
+
+app.get('/api/student/reviews', auth, role('student'), async(req,res,next)=>{try{res.json({items:(await q(`SELECT rr.*,a.title assignment_title FROM review_requests rr JOIN attempts at ON at.id=rr.attempt_id JOIN assignments a ON a.id=at.assignment_id WHERE rr.student_id=$1 ORDER BY rr.created_at DESC`,[req.user.id])).rows})}catch(e){next(e)}});
+app.post('/api/student/reviews', auth, role('student'), async(req,res,next)=>{try{
+  const at=(await q(`SELECT at.id,c.teacher_id FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN classes c ON c.id=a.class_id WHERE at.id=$1 AND at.student_id=$2 AND at.status='graded'`,[req.body.attemptId,req.user.id])).rows[0];if(!at)return res.status(400).json({message:'Chỉ có thể phúc khảo bài đã chấm'});
+  const msg=cleanExtra(req.body.message);if(!msg)return res.status(400).json({message:'Hãy nhập nội dung cần phúc khảo'});
+  const item=(await q(`INSERT INTO review_requests(attempt_id,student_id,teacher_id,question_id,message) VALUES($1,$2,$3,$4,$5) RETURNING *`,[at.id,req.user.id,at.teacher_id,cleanExtra(req.body.questionId)||null,msg])).rows[0];await notifyExtra(at.teacher_id,'Yêu cầu phúc khảo mới',msg,'warning',{reviewId:item.id});await audit(req.user.id,'review.created',{reviewId:item.id});res.json({item});
+}catch(e){next(e)}});
+app.get('/api/teacher/reviews', auth, role('teacher'), async(req,res,next)=>{try{res.json({items:(await q(`SELECT rr.*,u.name student_name,u.login,a.title assignment_title FROM review_requests rr JOIN users u ON u.id=rr.student_id JOIN attempts at ON at.id=rr.attempt_id JOIN assignments a ON a.id=at.assignment_id WHERE rr.teacher_id=$1 ORDER BY (rr.status='open') DESC,rr.created_at DESC`,[req.user.id])).rows})}catch(e){next(e)}});
+app.post('/api/teacher/reviews/:id/respond', auth, role('teacher'), async(req,res,next)=>{try{
+  const status=req.body.status==='resolved'?'resolved':'open';const row=(await q(`UPDATE review_requests SET status=$1,response=$2,updated_at=now() WHERE id=$3 AND teacher_id=$4 RETURNING *`,[status,cleanExtra(req.body.response),req.params.id,req.user.id])).rows[0];if(!row)return res.status(404).json({message:'Không tìm thấy yêu cầu'});await notifyExtra(row.student_id,'Phúc khảo đã được phản hồi',cleanExtra(req.body.response)||'Giáo viên đã cập nhật yêu cầu.','info',{reviewId:row.id});await audit(req.user.id,'review.responded',{reviewId:row.id,status});res.json({item:row});
+}catch(e){next(e)}});
+
+app.post('/api/support', auth, async(req,res,next)=>{try{const subject=cleanExtra(req.body.subject),message=cleanExtra(req.body.message);if(!subject||!message)return res.status(400).json({message:'Hãy nhập tiêu đề và nội dung'});const item=(await q(`INSERT INTO support_tickets(user_id,subject,message) VALUES($1,$2,$3) RETURNING *`,[req.user.id,subject,message])).rows[0];res.json({item})}catch(e){next(e)}});
+app.get('/api/support/mine', auth, async(req,res,next)=>{try{res.json({items:(await q(`SELECT * FROM support_tickets WHERE user_id=$1 ORDER BY created_at DESC`,[req.user.id])).rows})}catch(e){next(e)}});
+app.get('/api/admin/support', auth, role('admin'), async(req,res,next)=>{try{res.json({items:(await q(`SELECT t.*,u.name,u.login FROM support_tickets t LEFT JOIN users u ON u.id=t.user_id ORDER BY (t.status='open') DESC,t.created_at DESC`)).rows})}catch(e){next(e)}});
+app.post('/api/admin/support/:id/respond', auth, role('admin'), async(req,res,next)=>{try{const status=req.body.status==='closed'?'closed':'open';const row=(await q(`UPDATE support_tickets SET response=$1,status=$2,updated_at=now() WHERE id=$3 RETURNING *`,[cleanExtra(req.body.response),status,req.params.id])).rows[0];if(!row)return res.status(404).json({message:'Không tìm thấy ticket'});if(row.user_id)await notifyExtra(row.user_id,'Hỗ trợ đã phản hồi',cleanExtra(req.body.response)||'Yêu cầu hỗ trợ đã được cập nhật.','info',{ticketId:row.id});res.json({item:row})}catch(e){next(e)}});
