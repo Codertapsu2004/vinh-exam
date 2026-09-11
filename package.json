@@ -1,1 +1,1 @@
-{"name":"vinh-exam-live","version":"1.0.0","private":true,"engines":{"node":">=22"},"scripts":{"start":"node server.js"},"dependencies":{"bcryptjs":"^3.0.2","cookie-parser":"^1.4.7","express":"^5.1.0","pg":"^8.16.3"}}
+{"name":"vinh-exam-live","version":"1.0.0","private":true,"engines":{"node":">=22"},"scripts":{"start":"node bootstrap.js"},"dependencies":{"bcryptjs":"^3.0.2","cookie-parser":"^1.4.7","express":"^5.1.0","pg":"^8.16.3"}}
