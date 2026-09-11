@@ -72,7 +72,8 @@ code = code.slice(0,bankStartIndex) + bankHandlersV5 + code.slice(bankEndIndex);
 const migrationSql = [
   'server-extra-migration.sql',
   'server-v3-migration.sql',
-  'server-v5-migration.sql'
+  'server-v5-migration.sql',
+  'server-v6-migration.sql'
 ].map(f=>fs.readFileSync(path.join(__dirname,f),'utf8')).join('\n');
 const migrationMarker = "  if (process.env.SEED_ON_BOOT === 'true') await seed();";
 if (!code.includes(migrationMarker)) throw new Error('VINH EXAM extras: migration marker not found');
@@ -83,11 +84,12 @@ const extraRoutes = [
   'server-extra-routes.jsfrag',
   'server-v3-routes.jsfrag',
   'server-v4-routes.jsfrag',
-  'server-v5-routes.jsfrag'
+  'server-v5-routes.jsfrag',
+  'server-v6-routes.jsfrag'
 ].map(f=>fs.readFileSync(path.join(__dirname,f),'utf8')).join('\n');
 const routeMarker = "app.get('/api/health', (req,res) => res.json({ok:true,service:'vinh-exam-v2',time:new Date().toISOString()}));";
 if (!code.includes(routeMarker)) throw new Error('VINH EXAM extras: route marker not found');
-code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker.replace("vinh-exam-v2","vinh-exam-v5"));
+code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker.replace("vinh-exam-v2","vinh-exam-v6"));
 
 const m = new Module(target, module.parent);
 m.filename = target;
