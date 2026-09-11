@@ -20,7 +20,7 @@ const oldGrade = `app.post('/api/teacher/grade/:id', auth, role('teacher'), asyn
 });`;
 const newGrade = `app.post('/api/teacher/grade/:id', auth, role('teacher'), async (req,res,next) => {
   try {
-    const row=(await q(\`SELECT at.id,at.answers,e.questions,e.max_score FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN classes c ON c.id=a.class_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND c.teacher_id=$2 AND at.status IN('pending_manual','graded')\`,[req.params.id,req.user.id])).rows[0]; if(!row)return res.status(404).json({message:'Không tìm thấy bài để chấm'});
+    const row=(await q(\`SELECT at.id,at.answers,e.questions,e.max_score,at.student_id FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN classes c ON c.id=a.class_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND c.teacher_id=$2 AND at.status IN('pending_manual','graded')\`,[req.params.id,req.user.id])).rows[0]; if(!row)return res.status(404).json({message:'Không tìm thấy bài để chấm'});
     const objectiveQuestions=(row.questions||[]).filter(x=>x.type!=='essay');
     const objectiveScore=gradeQuestions(objectiveQuestions,row.answers||{}).score;
     const maxEssay=(row.questions||[]).filter(x=>x.type==='essay').reduce((s,x)=>s+Number(x.points||0),0);
@@ -28,11 +28,23 @@ const newGrade = `app.post('/api/teacher/grade/:id', auth, role('teacher'), asyn
     const total=+Math.min(Number(row.max_score||10),objectiveScore+manual).toFixed(2);
     await q(\`UPDATE attempts SET score=$1,status='graded',manual_comment=$2 WHERE id=$3\`,[total,String(req.body.comment||''),row.id]);
     await audit(req.user.id,'attempt.graded',{attemptId:row.id,score:total,objectiveScore,manual});
+    try{await notifyExtra(row.student_id,'Bài thi đã được chấm','Điểm hiện tại: '+total+'/'+row.max_score,'success',{attemptId:row.id})}catch{}
     res.json({ok:true,score:total,objectiveScore,manual});
   } catch(e){next(e)}
 });`;
 if (!code.includes(oldGrade)) throw new Error('VINH EXAM hotfix: grading patch target not found');
 code = code.replace(oldGrade, newGrade);
+
+const migrationSql = fs.readFileSync(path.join(__dirname,'server-extra-migration.sql'),'utf8');
+const migrationMarker = "  if (process.env.SEED_ON_BOOT === 'true') await seed();";
+if (!code.includes(migrationMarker)) throw new Error('VINH EXAM extras: migration marker not found');
+const escapedMigration = migrationSql.replaceAll('`','\\`');
+code = code.replace(migrationMarker, '  await q(`'+escapedMigration+'`);\n'+migrationMarker);
+
+const extraRoutes = fs.readFileSync(path.join(__dirname,'server-extra-routes.jsfrag'),'utf8');
+const routeMarker = "app.get('/api/health', (req,res) => res.json({ok:true,service:'vinh-exam-v2',time:new Date().toISOString()}));";
+if (!code.includes(routeMarker)) throw new Error('VINH EXAM extras: route marker not found');
+code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker);
 
 const m = new Module(target, module.parent);
 m.filename = target;
