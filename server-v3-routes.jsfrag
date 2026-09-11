@@ -1,0 +1,135 @@
+const multerV3 = require('multer');
+const mammothV3 = require('mammoth');
+const pdfParseV3 = require('pdf-parse');
+const uploadV3 = multerV3({ storage: multerV3.memoryStorage(), limits:{ fileSize:15*1024*1024, files:1 } });
+
+function parseImportedQuestionsV3(text=''){
+  const clean = String(text).replace(/\r/g,'').replace(/\u00a0/g,' ').trim();
+  if(!clean) return [];
+  const blocks = clean.split(/(?=^|\n\s*Câu\s+\d+\s*[\.\):\-]?)/gim).map(x=>x.trim()).filter(Boolean);
+  const out=[];
+  for(const raw of blocks){
+    if(!/^Câu\s+\d+/i.test(raw)) continue;
+    const lines=raw.split('\n').map(x=>x.trim()).filter(Boolean);
+    const first=lines.shift().replace(/^Câu\s+\d+\s*[\.\):\-]?\s*/i,'');
+    const options=[]; let answer=null; const body=[];
+    if(first) body.push(first);
+    for(const line of lines){
+      const om=line.match(/^([A-D])\s*[\.\):\-]\s*(.+)$/i);
+      if(om){ options['ABCD'.indexOf(om[1].toUpperCase())]=om[2].trim(); continue; }
+      const am=line.match(/^(?:Đáp\s*án|Answer)\s*[:\-]\s*([A-D])/i);
+      if(am){ answer='ABCD'.indexOf(am[1].toUpperCase()); continue; }
+      body.push(line);
+    }
+    const prompt=body.join('\n').trim();
+    if(!prompt) continue;
+    if(options.filter(Boolean).length>=2){
+      out.push({id:uuid(),type:'single',text:prompt,options:options.filter(x=>x!==undefined),answer:answer===null?0:answer,points:1,explanation:''});
+    }else out.push({id:uuid(),type:'essay',text:prompt,points:1,explanation:''});
+  }
+  return out.slice(0,200);
+}
+function kindFromFileV3(file){
+  const n=(file.originalname||'').toLowerCase(), m=file.mimetype||'';
+  if(n.endsWith('.docx')||m.includes('wordprocessingml')) return 'docx';
+  if(n.endsWith('.pdf')||m==='application/pdf') return 'pdf';
+  if(n.endsWith('.json')||m.includes('json')) return 'json';
+  if(m.startsWith('image/')) return 'image';
+  return 'unknown';
+}
+
+app.post('/api/teacher/imports', auth, role('teacher'), uploadV3.single('file'), async(req,res,next)=>{try{
+  if(!req.file)return res.status(400).json({message:'Hãy chọn tệp Word, PDF, JSON hoặc ảnh'});
+  const kind=kindFromFileV3(req.file); if(kind==='unknown')return res.status(400).json({message:'Định dạng chưa được hỗ trợ'});
+  const asset=(await q(`INSERT INTO assets(owner_id,original_name,mime_type,size_bytes,data) VALUES($1,$2,$3,$4,$5) RETURNING id`,[req.user.id,req.file.originalname,req.file.mimetype||'application/octet-stream',req.file.size,req.file.buffer])).rows[0];
+  const job=(await q(`INSERT INTO import_jobs(owner_id,asset_id,original_name,kind,status) VALUES($1,$2,$3,$4,'processing') RETURNING *`,[req.user.id,asset.id,req.file.originalname,kind])).rows[0];
+  let text='',html='',questions=[],warnings=[];
+  try{
+    if(kind==='docx'){
+      const result=await mammothV3.convertToHtml({buffer:req.file.buffer},{convertImage:mammothV3.images.imgElement(async img=>({src:`data:${img.contentType};base64,${await img.read('base64')}`}))});
+      html=result.value||''; text=(await mammothV3.extractRawText({buffer:req.file.buffer})).value||''; questions=parseImportedQuestionsV3(text);
+      warnings=(result.messages||[]).map(x=>x.message).slice(0,30);
+      if(!questions.length) warnings.push('Không nhận diện chắc chắn cấu trúc câu hỏi. Tệp gốc vẫn được giữ để giáo viên rà soát thủ công.');
+    }else if(kind==='pdf'){
+      const parsed=await pdfParseV3(req.file.buffer); text=parsed.text||''; questions=parseImportedQuestionsV3(text);
+      warnings.push('PDF được trích xuất văn bản; bố cục phức tạp, hình và công thức cần giáo viên rà soát trước khi xuất bản.');
+      if(!questions.length)warnings.push('Không nhận diện tự động được cấu trúc câu hỏi từ PDF này.');
+    }else if(kind==='json'){
+      const parsed=JSON.parse(req.file.buffer.toString('utf8')); questions=Array.isArray(parsed)?parsed:Array.isArray(parsed.questions)?parsed.questions:[];
+      questions=questions.map((x,i)=>({id:x.id||uuid(),type:x.type||'essay',text:x.text||x.prompt||`Câu ${i+1}`,options:x.options||[],statements:x.statements||[],answer:x.answer,points:Number(x.points||1),tolerance:x.tolerance,explanation:x.explanation||''})).slice(0,300);
+      text=JSON.stringify(parsed,null,2);
+    }else{
+      warnings.push('Ảnh được lưu nguyên bản. VINH EXAM chưa tự suy đoán nội dung OCR để tránh nhập sai câu hỏi; hãy xem ảnh và thêm câu thủ công.');
+    }
+    await q(`UPDATE import_jobs SET status='ready',extracted_text=$1,extracted_html=$2,draft_questions=$3,warnings=$4,updated_at=now() WHERE id=$5`,[text,html,JSON.stringify(questions),JSON.stringify(warnings),job.id]);
+  }catch(err){
+    warnings.push(err.message||'Không thể phân tích tệp'); await q(`UPDATE import_jobs SET status='needs_review',warnings=$1,updated_at=now() WHERE id=$2`,[JSON.stringify(warnings),job.id]);
+  }
+  await audit(req.user.id,'import.created',{importId:job.id,kind,file:req.file.originalname});
+  res.json({importId:job.id});
+}catch(e){next(e)}});
+app.get('/api/teacher/imports', auth, role('teacher'), async(req,res,next)=>{try{res.json({items:(await q(`SELECT id,original_name,kind,status,jsonb_array_length(draft_questions)::int question_count,warnings,created_at,updated_at FROM import_jobs WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 100`,[req.user.id])).rows})}catch(e){next(e)}});
+app.get('/api/teacher/imports/:id', auth, role('teacher'), async(req,res,next)=>{try{const item=(await q(`SELECT * FROM import_jobs WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id])).rows[0];if(!item)return res.status(404).json({message:'Không tìm thấy tác vụ nhập'});res.json({item})}catch(e){next(e)}});
+app.post('/api/teacher/imports/:id/create-exam', auth, role('teacher'), async(req,res,next)=>{try{
+  const item=(await q(`SELECT * FROM import_jobs WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id])).rows[0];if(!item)return res.status(404).json({message:'Không tìm thấy tác vụ nhập'});
+  const title=String(req.body.title||item.original_name.replace(/\.[^.]+$/,'')).trim();
+  const questions=Array.isArray(req.body.questions)?req.body.questions:(item.draft_questions||[]);
+  const max=questions.reduce((s,x)=>s+Number(x.points||0),0)||10;
+  const exam=(await q(`INSERT INTO exams(title,subject,duration,max_score,questions,owner_id,status,updated_at) VALUES($1,$2,$3,$4,$5,$6,'draft',now()) RETURNING *`,[title,String(req.body.subject||''),Number(req.body.duration||45),max,JSON.stringify(questions),req.user.id])).rows[0];
+  await audit(req.user.id,'import.exam_created',{importId:item.id,examId:exam.id});res.json({exam});
+}catch(e){next(e)}});
+app.get('/api/assets/:id', auth, async(req,res,next)=>{try{
+  const asset=(await q(`SELECT * FROM assets WHERE id=$1`,[req.params.id])).rows[0];if(!asset)return res.status(404).end();
+  if(req.user.role!=='admin' && asset.owner_id!==req.user.id)return res.status(403).end();
+  res.setHeader('Content-Type',asset.mime_type);res.setHeader('Content-Disposition',`inline; filename*=UTF-8''${encodeURIComponent(asset.original_name)}`);res.send(asset.data);
+}catch(e){next(e)}});
+
+app.get('/api/teacher/classes/:id/join-code', auth, role('teacher'), async(req,res,next)=>{try{
+  const cls=await ownedClass(req.params.id,req.user.id);if(!cls)return res.status(404).json({message:'Không tìm thấy lớp'});
+  let row=(await q(`SELECT * FROM class_join_codes WHERE class_id=$1`,[cls.id])).rows[0];
+  if(!row){let code;for(let i=0;i<8;i++){code=crypto.randomBytes(4).toString('hex').slice(0,6).toUpperCase();try{row=(await q(`INSERT INTO class_join_codes(class_id,code) VALUES($1,$2) RETURNING *`,[cls.id,code])).rows[0];break}catch(e){if(e.code!=='23505')throw e}}}
+  res.json({item:row});
+}catch(e){next(e)}});
+app.post('/api/teacher/classes/:id/join-code/regenerate', auth, role('teacher'), async(req,res,next)=>{try{
+  const cls=await ownedClass(req.params.id,req.user.id);if(!cls)return res.status(404).json({message:'Không tìm thấy lớp'});
+  let row;for(let i=0;i<8;i++){const code=crypto.randomBytes(4).toString('hex').slice(0,6).toUpperCase();try{row=(await q(`INSERT INTO class_join_codes(class_id,code,active) VALUES($1,$2,true) ON CONFLICT(class_id) DO UPDATE SET code=excluded.code,active=true,created_at=now() RETURNING *`,[cls.id,code])).rows[0];break}catch(e){if(e.code!=='23505')throw e}}
+  await audit(req.user.id,'class.join_code_regenerated',{classId:cls.id});res.json({item:row});
+}catch(e){next(e)}});
+app.post('/api/student/join-class', auth, role('student'), async(req,res,next)=>{try{
+  const code=String(req.body.code||'').trim().toUpperCase();const row=(await q(`SELECT jc.class_id,c.name,c.subject FROM class_join_codes jc JOIN classes c ON c.id=jc.class_id WHERE jc.code=$1 AND jc.active=true AND c.status='active'`,[code])).rows[0];if(!row)return res.status(404).json({message:'Mã lớp không hợp lệ hoặc đã tắt'});
+  await q(`INSERT INTO enrollments(class_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,[row.class_id,req.user.id]);await audit(req.user.id,'class.joined',{classId:row.class_id});res.json({class:row});
+}catch(e){next(e)}});
+app.get('/api/student/classes', auth, role('student'), async(req,res,next)=>{try{res.json({items:(await q(`SELECT c.id,c.name,c.subject,u.name teacher_name,en.joined_at,(SELECT count(*) FROM assignments a WHERE a.class_id=c.id)::int assignments FROM enrollments en JOIN classes c ON c.id=en.class_id LEFT JOIN users u ON u.id=c.teacher_id WHERE en.student_id=$1 ORDER BY c.name`,[req.user.id])).rows})}catch(e){next(e)}});
+app.post('/api/teacher/classes/:id/students/bulk', auth, role('teacher'), async(req,res,next)=>{try{
+  const cls=await ownedClass(req.params.id,req.user.id);if(!cls)return res.status(404).json({message:'Không tìm thấy lớp'});const rows=Array.isArray(req.body.rows)?req.body.rows:[];const results=[];
+  for(let i=0;i<Math.min(rows.length,500);i++){const x=rows[i],login=String(x.login||'').trim().toLowerCase(),name=String(x.name||'').trim(),password=String(x.password||'');try{if(!login||!name)throw Error('Thiếu login hoặc họ tên');let s=(await q(`SELECT * FROM users WHERE login=$1`,[login])).rows[0];if(s&&s.role!=='student')throw Error('Login thuộc tài khoản khác');if(!s){if(password.length<6)throw Error('Mật khẩu tối thiểu 6 ký tự');s=(await q(`INSERT INTO users(login,name,role,password_hash) VALUES($1,$2,'student',$3) RETURNING *`,[login,name,await bcrypt.hash(password,12)])).rows[0]}await q(`INSERT INTO enrollments(class_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,[cls.id,s.id]);results.push({row:i+1,ok:true,login})}catch(err){results.push({row:i+1,ok:false,login,error:err.message})}}
+  await audit(req.user.id,'class.students_bulk_imported',{classId:cls.id,total:rows.length,success:results.filter(x=>x.ok).length});res.json({results});
+}catch(e){next(e)}});
+
+app.get('/api/auth/sessions', auth, async(req,res,next)=>{try{res.json({items:(await q(`SELECT id,created_at,expires_at,(id=$2)::boolean current FROM sessions WHERE user_id=$1 ORDER BY created_at DESC`,[req.user.id,req.user.session_id])).rows})}catch(e){next(e)}});
+app.delete('/api/auth/sessions/:id', auth, async(req,res,next)=>{try{if(req.params.id===req.user.session_id)return res.status(400).json({message:'Không thể thu hồi phiên đang dùng tại đây'});await q(`DELETE FROM sessions WHERE id=$1 AND user_id=$2`,[req.params.id,req.user.id]);res.json({ok:true})}catch(e){next(e)}});
+app.post('/api/admin/users/:id/reset-password', auth, role('admin'), async(req,res,next)=>{try{const pwd=String(req.body.password||'');if(pwd.length<8)return res.status(400).json({message:'Mật khẩu tối thiểu 8 ký tự'});const r=await q(`UPDATE users SET password_hash=$1 WHERE id=$2 RETURNING id`,[await bcrypt.hash(pwd,12),req.params.id]);if(!r.rowCount)return res.status(404).json({message:'Không tìm thấy tài khoản'});await q(`DELETE FROM sessions WHERE user_id=$1`,[req.params.id]);await audit(req.user.id,'admin.password_reset',{userId:req.params.id});res.json({ok:true})}catch(e){next(e)}});
+
+app.post('/api/teacher/assignments/:id/policy', auth, role('teacher'), async(req,res,next)=>{try{
+  const row=(await q(`UPDATE assignments a SET show_score=$1,show_answers=$2,show_explanations=$3 FROM classes c WHERE a.id=$4 AND c.id=a.class_id AND c.teacher_id=$5 RETURNING a.*`,[!!req.body.showScore,!!req.body.showAnswers,!!req.body.showExplanations,req.params.id,req.user.id])).rows[0];if(!row)return res.status(404).json({message:'Không tìm thấy ca thi'});await audit(req.user.id,'assignment.policy_updated',{assignmentId:row.id,showScore:row.show_score,showAnswers:row.show_answers,showExplanations:row.show_explanations});res.json({assignment:row});
+}catch(e){next(e)}});
+app.get('/api/student/result/:id/published', auth, role('student'), async(req,res,next)=>{try{
+  const row=(await q(`SELECT at.id,at.status,at.score,at.submitted_at,at.manual_comment,at.answers,a.title,a.show_score,a.show_answers,a.show_explanations,e.title exam_title,e.max_score,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`,[req.params.id,req.user.id])).rows[0];if(!row)return res.status(404).json({message:'Không tìm thấy kết quả'});
+  const result={id:row.id,status:row.status,submitted_at:row.submitted_at,manual_comment:row.manual_comment,title:row.title,exam_title:row.exam_title,max_score:row.max_score,score:row.show_score&&row.status==='graded'?row.score:null,scorePublished:row.show_score};
+  let review=null;if(row.status==='graded'&&row.show_answers){review={answers:row.answers,questions:(row.questions||[]).map(q=>row.show_explanations?q:{...q,explanation:undefined})}}
+  res.json({result,review,policy:{showScore:row.show_score,showAnswers:row.show_answers,showExplanations:row.show_explanations}});
+}catch(e){next(e)}});
+
+app.post('/api/teacher/exams/:id/new-version', auth, role('teacher'), async(req,res,next)=>{try{
+  const exam=await ownedExam(req.params.id,req.user.id);if(!exam)return res.status(404).json({message:'Không tìm thấy đề'});
+  const root=exam.parent_exam_id||exam.id;const next=(await q(`SELECT COALESCE(max(version_no),0)+1 n FROM exams WHERE owner_id=$1 AND (id=$2 OR parent_exam_id=$2)`,[req.user.id,root])).rows[0].n;
+  const row=(await q(`INSERT INTO exams(title,subject,duration,max_score,questions,owner_id,status,parent_exam_id,version_no,updated_at) VALUES($1,$2,$3,$4,$5,$6,'draft',$7,$8,now()) RETURNING *`,[`${exam.title.replace(/\s+—\s+v\d+$/i,'')} — v${next}`,exam.subject,exam.duration,exam.max_score,JSON.stringify(exam.questions||[]),req.user.id,root,next])).rows[0];await audit(req.user.id,'exam.version_created',{sourceExamId:exam.id,examId:row.id,version:next});res.json({exam:row});
+}catch(e){next(e)}});
+app.get('/api/teacher/exams/:id/versions', auth, role('teacher'), async(req,res,next)=>{try{const exam=await ownedExam(req.params.id,req.user.id);if(!exam)return res.status(404).json({message:'Không tìm thấy đề'});const root=exam.parent_exam_id||exam.id;res.json({items:(await q(`SELECT id,title,status,version_no,created_at,updated_at FROM exams WHERE owner_id=$1 AND (id=$2 OR parent_exam_id=$2) ORDER BY version_no`,[req.user.id,root])).rows})}catch(e){next(e)}});
+
+app.get('/api/teacher/monitor/:id/stream', auth, role('teacher'), async(req,res,next)=>{try{
+  const own=(await q(`SELECT a.id,a.class_id,c.name class_name,e.title exam_title,jsonb_array_length(e.questions)::int total_questions FROM assignments a JOIN classes c ON c.id=a.class_id JOIN exams e ON e.id=a.exam_id WHERE a.id=$1 AND c.teacher_id=$2`,[req.params.id,req.user.id])).rows[0];if(!own)return res.status(403).end();
+  res.setHeader('Content-Type','text/event-stream');res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');res.flushHeaders?.();
+  const send=async()=>{try{await finalizeExpiredAttempts();const rows=(await q(`SELECT u.id student_id,u.name,u.login,at.id attempt_id,COALESCE(at.status,'not_started') status,at.started_at,at.deadline_at,at.last_saved_at,at.score,CASE WHEN at.id IS NULL THEN 0 ELSE (SELECT count(*)::int FROM jsonb_object_keys(COALESCE(at.answers,'{}'::jsonb))) END answered FROM enrollments en JOIN users u ON u.id=en.student_id LEFT JOIN attempts at ON at.assignment_id=$1 AND at.student_id=u.id WHERE en.class_id=$2 ORDER BY u.name`,[own.id,own.class_id])).rows;res.write(`data: ${JSON.stringify({assignment:own,attempts:rows,serverTime:new Date().toISOString()})}\n\n`)}catch(err){res.write(`event: error\ndata: ${JSON.stringify({message:err.message})}\n\n`)}};
+  await send();const timer=setInterval(send,2000);req.on('close',()=>clearInterval(timer));
+}catch(e){next(e)}});
