@@ -1,0 +1,81 @@
+const registerRateV8 = new Map();
+function registerAllowedV8(req){
+  const key=String(req.ip||req.headers['x-forwarded-for']||'unknown').split(',')[0].trim();
+  const now=Date.now(), windowMs=10*60*1000, limit=8;
+  const state=registerRateV8.get(key)||{start:now,count:0};
+  if(now-state.start>windowMs){state.start=now;state.count=0}
+  state.count++;registerRateV8.set(key,state);
+  return state.count<=limit;
+}
+function cleanRegisterV8(v,max=120){return String(v??'').trim().slice(0,max)}
+function cleanPhoneV8(v){return String(v??'').trim().replace(/[\s().-]/g,'').slice(0,20)}
+function validEmailV8(v){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)}
+function validBirthV8(v){return !v || /^\d{4}-\d{2}-\d{2}$/.test(v)}
+
+app.get('/api/auth/registration-meta',(req,res)=>res.json({
+  roles:[{id:'student',label:'Học sinh'},{id:'teacher',label:'Giáo viên'}],
+  grades:['6','7','8','9','10','11','12'],
+  subjects:['Toán','Vật lí','Hóa học','Sinh học','Ngữ văn','Tiếng Anh','Tin học','Khác']
+}));
+
+app.post('/api/auth/register', async(req,res,next)=>{
+  if(!registerAllowedV8(req))return res.status(429).json({message:'Bạn thao tác đăng ký quá nhanh. Vui lòng thử lại sau ít phút.'});
+  const roleValue=cleanRegisterV8(req.body.role,20).toLowerCase();
+  const name=cleanRegisterV8(req.body.name,90);
+  const login=cleanRegisterV8(req.body.login,32).toLowerCase();
+  const password=String(req.body.password||'');
+  const email=cleanRegisterV8(req.body.email,160).toLowerCase();
+  const phone=cleanPhoneV8(req.body.phone);
+  if(!['student','teacher'].includes(roleValue))return res.status(400).json({message:'Chỉ có thể đăng ký tài khoản Học sinh hoặc Giáo viên'});
+  if(name.length<2)return res.status(400).json({message:'Họ và tên cần ít nhất 2 ký tự'});
+  if(!/^[a-z0-9._-]{4,32}$/.test(login))return res.status(400).json({message:'Tên đăng nhập gồm 4–32 ký tự: chữ thường, số, dấu chấm, gạch dưới hoặc gạch ngang'});
+  if(password.length<8||password.length>72||!/[A-Za-z]/.test(password)||!/\d/.test(password))return res.status(400).json({message:'Mật khẩu cần 8–72 ký tự và có cả chữ lẫn số'});
+  if(email&&!validEmailV8(email))return res.status(400).json({message:'Email chưa đúng định dạng'});
+  if(phone&&!/^(?:\+?\d){9,14}$/.test(phone))return res.status(400).json({message:'Số điện thoại chưa đúng định dạng'});
+
+  const province=cleanRegisterV8(req.body.province,100);
+  const school=cleanRegisterV8(req.body.school||req.body.workplace,180);
+  const birthDate=cleanRegisterV8(req.body.birthDate,10);
+  const gender=['male','female','other',''].includes(req.body.gender)?req.body.gender:'';
+  if(!validBirthV8(birthDate))return res.status(400).json({message:'Ngày sinh chưa đúng định dạng'});
+
+  let profile={province,school,birthDate,gender,registeredAt:new Date().toISOString()};
+  if(roleValue==='student'){
+    const grade=cleanRegisterV8(req.body.grade,4);
+    const className=cleanRegisterV8(req.body.className,60);
+    if(!['6','7','8','9','10','11','12'].includes(grade))return res.status(400).json({message:'Hãy chọn khối/lớp đang học'});
+    profile={...profile,grade,className};
+  }else{
+    const rawSubjects=Array.isArray(req.body.subjects)?req.body.subjects:String(req.body.subjects||'').split(',');
+    const subjects=[...new Set(rawSubjects.map(x=>cleanRegisterV8(x,40)).filter(Boolean))].slice(0,6);
+    const experienceYears=Math.max(0,Math.min(60,Number(req.body.experienceYears||0)));
+    const degree=cleanRegisterV8(req.body.degree,120);
+    if(!subjects.length)return res.status(400).json({message:'Hãy chọn ít nhất một môn giảng dạy'});
+    profile={...profile,subjects,experienceYears,degree};
+  }
+
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const duplicate=(await client.query(`SELECT login,email,phone FROM users WHERE lower(login)=lower($1) OR ($2<>'' AND lower(COALESCE(email,''))=lower($2)) OR ($3<>'' AND phone=$3) LIMIT 1`,[login,email,phone])).rows[0];
+    if(duplicate){
+      await client.query('ROLLBACK');
+      if(String(duplicate.login).toLowerCase()===login)return res.status(409).json({message:'Tên đăng nhập này đã được sử dụng'});
+      if(email&&String(duplicate.email||'').toLowerCase()===email)return res.status(409).json({message:'Email này đã được đăng ký'});
+      return res.status(409).json({message:'Số điện thoại này đã được đăng ký'});
+    }
+    const passwordHash=await bcrypt.hash(password,12);
+    const user=(await client.query(`INSERT INTO users(login,name,role,password_hash,status,email,phone,profile,updated_at) VALUES($1,$2,$3,$4,'active',$5,$6,$7,now()) RETURNING id,login,name,role,status,email,phone,profile`,[login,name,roleValue,passwordHash,email||null,phone||null,JSON.stringify(profile)])).rows[0];
+    const raw=crypto.randomBytes(32).toString('base64url');
+    const exp=new Date(Date.now()+7*864e5);
+    await client.query(`INSERT INTO sessions(user_id,token_hash,expires_at) VALUES($1,$2,$3)`,[user.id,tokenHash(raw),exp]);
+    await client.query(`INSERT INTO audit(user_id,action,meta) VALUES($1,'auth.registered',$2)`,[user.id,JSON.stringify({role:roleValue,hasEmail:!!email,hasPhone:!!phone})]);
+    await client.query('COMMIT');
+    res.cookie('vx_session',raw,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'lax',expires:exp,path:'/'});
+    res.status(201).json({user:{id:user.id,name:user.name,login:user.login,role:user.role,email:user.email,phone:user.phone,profile:user.profile}});
+  }catch(e){
+    try{await client.query('ROLLBACK')}catch{}
+    if(e?.code==='23505')return res.status(409).json({message:'Thông tin đăng ký đã tồn tại trên hệ thống'});
+    next(e);
+  }finally{client.release()}
+});
