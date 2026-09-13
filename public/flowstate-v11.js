@@ -8,6 +8,16 @@
   const cardWrap=login.querySelector('.login-card-wrap');
   const card=login.querySelector('.login-card');
 
+  function revealWords(el,{base=480,stagger=85,y=26,duration=720}={}){
+    if(!el)return;const text=(el.textContent||'').trim();if(!text)return;
+    const words=text.split(/\s+/);
+    el.innerHTML=words.map((w,i)=>`<span class="flow-word-v11" style="--fw-delay:${base+i*stagger}ms;--fw-y:${y}px;--fw-duration:${duration}ms">${esc(w)}${i<words.length-1?'&nbsp;':''}</span>`).join('');
+  }
+  function revealHeroCopy(){
+    revealWords(hero?.querySelector('h1'),{base:480,stagger:85,y:26,duration:720});
+    revealWords(hero?.querySelector('p'),{base:1150,stagger:22,y:14,duration:600});
+  }
+
   function openAuth(mode='login'){
     login.classList.add('auth-open-v11');
     if(typeof window.switchAuthV8==='function') window.switchAuthV8(mode==='register'?'register':'login');
@@ -37,6 +47,7 @@
     hero.querySelector('.eyebrow')?.replaceChildren(document.createTextNode('Nền tảng dạy học & kiểm tra trực tuyến'));
     const h=hero.querySelector('h1'); if(h) h.textContent='Dạy học sâu hơn. Kiểm tra thông minh hơn.';
     const p=hero.querySelector('p'); if(p) p.textContent='Từ lớp học, ra đề, giao bài đến giám sát và chấm điểm — một không gian tập trung, rõ ràng và đẹp để giáo viên lẫn học sinh đều muốn sử dụng mỗi ngày.';
+    revealHeroCopy();
     const cta=document.createElement('div');
     cta.className='flow-cta-bar-v11';
     cta.innerHTML=`<div class="flow-cta-copy-v11"><b>Sẵn sàng tạo lớp hoặc vào học?</b><span>Đăng ký miễn phí · Không cần cài đặt · Dữ liệu lưu trên máy chủ</span></div><button type="button" class="flow-white-btn-v11" onclick="openFlowAuthV11('register')">Bắt đầu ngay →</button>`;
@@ -62,8 +73,7 @@
       product:['Một hệ thống, một luồng công việc','Từ Nháp → Xuất bản → Giao → Làm bài → Chấm → Công bố. Không tạo nút trang trí không có nghiệp vụ phía sau.']
     }[type]||['VINH EXAM','Nền tảng thi trực tuyến dành cho giáo viên và học sinh.'];
     const badge=hero?.querySelector('.eyebrow'),h=hero?.querySelector('h1'),p=hero?.querySelector('p');
-    if(badge)badge.textContent='VINH EXAM · PRODUCT TOUR';if(h)h.textContent=info[0];if(p)p.textContent=info[1];
-    hero?.animate([{opacity:.72,transform:'translateY(7px)'},{opacity:1,transform:'none'}],{duration:430,easing:'cubic-bezier(.2,0,0,1)'});
+    if(badge)badge.textContent='VINH EXAM · PRODUCT TOUR';if(h)h.textContent=info[0];if(p)p.textContent=info[1];revealHeroCopy();
   };
 
   function illustrationSvg(){return `<svg class="flow-illustration-v11" viewBox="0 0 220 140" aria-hidden="true">
