@@ -1,0 +1,92 @@
+function gradeQuestionsV9(questions, answers) {
+  let score = 0, pending = false;
+  for (const item of questions || []) {
+    const ans = answers?.[item.id];
+    if (item.type === 'single' && Number(ans) === Number(item.answer)) score += Number(item.points || 0);
+    else if (item.type === 'tf' && Array.isArray(ans)) {
+      const key = Array.isArray(item.answer) ? item.answer : [];
+      const correct = key.filter((v,i) => ans[i] === v).length;
+      const total = key.length || 1;
+      let ratio;
+      if (total === 4) ratio = ({0:0,1:0.10,2:0.25,3:0.50,4:1})[correct] || 0;
+      else ratio = correct / total;
+      score += Number(item.points || 0) * ratio;
+    } else if (item.type === 'number' && ans !== null && ans !== undefined && ans !== '' && Math.abs(Number(ans)-Number(item.answer)) <= Number(item.tolerance || 0)) score += Number(item.points || 0);
+    else if (item.type === 'essay') pending = true;
+  }
+  return { score:+score.toFixed(2), pending };
+}
+gradeQuestions = gradeQuestionsV9;
+
+function assignmentKindV9(v){ return String(v||'test').toLowerCase()==='homework'?'homework':'test'; }
+
+app.get('/api/student/dashboard-v9', auth, role('student'), async(req,res,next)=>{try{
+  await finalizeExpiredAttempts();
+  const rows=(await q(`SELECT a.id assignment_id,a.class_id,a.title,a.open_at,a.close_at,a.duration,a.assignment_kind,
+    e.title exam_title,e.subject,c.name class_name,u.name teacher_name,
+    at.id attempt_id,at.status,at.score,at.submitted_at,at.deadline_at
+    FROM enrollments en JOIN classes c ON c.id=en.class_id
+    JOIN assignments a ON a.class_id=c.id JOIN exams e ON e.id=a.exam_id
+    LEFT JOIN users u ON u.id=c.teacher_id
+    LEFT JOIN attempts at ON at.assignment_id=a.id AND at.student_id=$1
+    WHERE en.student_id=$1 ORDER BY a.open_at DESC`,[req.user.id])).rows;
+  res.json({assignments:rows,now:new Date().toISOString()});
+}catch(e){next(e)}});
+
+app.get('/api/student/classes-v9', auth, role('student'), async(req,res,next)=>{try{
+  const rows=(await q(`SELECT c.id,c.name,c.subject,u.name teacher_name,en.joined_at,
+    count(a.id)::int assignments,
+    count(a.id) FILTER (WHERE a.assignment_kind='homework')::int homework_count,
+    count(a.id) FILTER (WHERE a.assignment_kind='test')::int test_count
+    FROM enrollments en JOIN classes c ON c.id=en.class_id
+    LEFT JOIN users u ON u.id=c.teacher_id
+    LEFT JOIN assignments a ON a.class_id=c.id
+    WHERE en.student_id=$1 GROUP BY c.id,c.name,c.subject,u.name,en.joined_at ORDER BY c.name`,[req.user.id])).rows;
+  res.json({items:rows,now:new Date().toISOString()});
+}catch(e){next(e)}});
+
+app.get('/api/student/classes/:id/detail-v9', auth, role('student'), async(req,res,next)=>{try{
+  const cls=(await q(`SELECT c.id,c.name,c.subject,u.name teacher_name,en.joined_at
+    FROM enrollments en JOIN classes c ON c.id=en.class_id LEFT JOIN users u ON u.id=c.teacher_id
+    WHERE en.student_id=$1 AND c.id=$2`,[req.user.id,req.params.id])).rows[0];
+  if(!cls)return res.status(404).json({message:'Bạn không thuộc lớp học này'});
+  const rows=(await q(`SELECT a.id assignment_id,a.title,a.open_at,a.close_at,a.duration,a.assignment_kind,
+    e.title exam_title,e.subject,at.id attempt_id,at.status,at.score,at.submitted_at,at.deadline_at
+    FROM assignments a JOIN exams e ON e.id=a.exam_id
+    LEFT JOIN attempts at ON at.assignment_id=a.id AND at.student_id=$1
+    WHERE a.class_id=$2 ORDER BY a.open_at DESC`,[req.user.id,req.params.id])).rows;
+  res.json({class:cls,assignments:rows,now:new Date().toISOString()});
+}catch(e){next(e)}});
+
+app.post('/api/student/start-v9/:id', auth, role('student'), async(req,res,next)=>{try{
+  const row=(await q(`SELECT a.*,e.status exam_status,c.name class_name
+    FROM assignments a JOIN classes c ON c.id=a.class_id JOIN exams e ON e.id=a.exam_id
+    JOIN enrollments en ON en.class_id=a.class_id
+    WHERE a.id=$1 AND en.student_id=$2`,[req.params.id,req.user.id])).rows[0];
+  if(!row)return res.status(403).json({message:'Bài này không thuộc lớp của bạn'});
+  const now=Date.now(),openAt=new Date(row.open_at).getTime(),closeAt=new Date(row.close_at).getTime();
+  if(now<openAt)return res.status(409).json({message:`Bài chưa mở. Thời gian bắt đầu: ${new Date(row.open_at).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'})}`,code:'NOT_OPEN',openAt:row.open_at,serverNow:new Date().toISOString()});
+  if(now>closeAt)return res.status(409).json({message:'Bài đã hết thời gian làm',code:'CLOSED',closeAt:row.close_at,serverNow:new Date().toISOString()});
+  if(row.exam_status!=='published')return res.status(409).json({message:'Đề thi chưa ở trạng thái xuất bản'});
+  let attempt=(await q(`SELECT * FROM attempts WHERE assignment_id=$1 AND student_id=$2`,[row.id,req.user.id])).rows[0];
+  if(!attempt){
+    attempt=(await q(`INSERT INTO attempts(assignment_id,student_id,deadline_at,last_saved_at)
+      VALUES($1,$2,LEAST(now()+($3||' minutes')::interval,$4),now()) RETURNING *`,[row.id,req.user.id,row.duration,row.close_at])).rows[0];
+    await audit(req.user.id,'attempt.started',{attemptId:attempt.id,assignmentId:row.id,source:'v9'});
+  }
+  res.json({attemptId:attempt.id,status:attempt.status,assignmentKind:row.assignment_kind||'test',serverNow:new Date().toISOString()});
+}catch(e){next(e)}});
+
+app.post('/api/teacher/assignments-v9', auth, role('teacher'), async(req,res,next)=>{try{
+  const cls=await ownedClass(req.body.classId,req.user.id),exam=await ownedExam(req.body.examId,req.user.id);
+  if(!cls||!exam)return res.status(403).json({message:'Không có quyền với lớp hoặc đề'});
+  if(exam.status!=='published')return res.status(409).json({message:'Cần xuất bản đề trước khi giao'});
+  const open=new Date(req.body.openAt||Date.now()),close=new Date(req.body.closeAt||Date.now()+864e5);
+  if(Number.isNaN(open.getTime())||Number.isNaN(close.getTime())||!(close>open))return res.status(400).json({message:'Thời gian đóng phải sau thời gian mở'});
+  const kind=assignmentKindV9(req.body.assignmentKind);
+  const duration=Math.max(1,Math.min(1440,Number(req.body.duration||exam.duration||45)));
+  const row=(await q(`INSERT INTO assignments(exam_id,class_id,title,open_at,close_at,duration,max_attempts,assignment_kind)
+    VALUES($1,$2,$3,$4,$5,$6,1,$7) RETURNING *`,[exam.id,cls.id,String(req.body.title||exam.title).trim()||exam.title,open,close,duration,kind])).rows[0];
+  await audit(req.user.id,'assignment.created',{assignmentId:row.id,classId:cls.id,examId:exam.id,assignmentKind:kind});
+  res.json({assignment:row});
+}catch(e){next(e)}});
