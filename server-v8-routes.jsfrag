@@ -22,13 +22,13 @@ app.post('/api/auth/register', async(req,res,next)=>{
   if(!registerAllowedV8(req))return res.status(429).json({message:'Bạn thao tác đăng ký quá nhanh. Vui lòng thử lại sau ít phút.'});
   const roleValue=cleanRegisterV8(req.body.role,20).toLowerCase();
   const name=cleanRegisterV8(req.body.name,90);
-  const login=cleanRegisterV8(req.body.login,32).toLowerCase();
+  const login=cleanRegisterV8(req.body.login,40).toLowerCase();
   const password=String(req.body.password||'');
   const email=cleanRegisterV8(req.body.email,160).toLowerCase();
   const phone=cleanPhoneV8(req.body.phone);
   if(!['student','teacher'].includes(roleValue))return res.status(400).json({message:'Chỉ có thể đăng ký tài khoản Học sinh hoặc Giáo viên'});
   if(name.length<2)return res.status(400).json({message:'Họ và tên cần ít nhất 2 ký tự'});
-  if(!/^[a-z0-9._-]{4,32}$/.test(login))return res.status(400).json({message:'Tên đăng nhập gồm 4–32 ký tự: chữ thường, số, dấu chấm, gạch dưới hoặc gạch ngang'});
+  if(login.length<2||login.length>40||/[\u0000-\u001F\u007F]/.test(login))return res.status(400).json({message:'Tên đăng nhập cần 2–40 ký tự và không chứa ký tự điều khiển'});
   if(password.length<8||password.length>72||!/[A-Za-z]/.test(password)||!/\d/.test(password))return res.status(400).json({message:'Mật khẩu cần 8–72 ký tự và có cả chữ lẫn số'});
   if(email&&!validEmailV8(email))return res.status(400).json({message:'Email chưa đúng định dạng'});
   if(phone&&!/^(?:\+?\d){9,14}$/.test(phone))return res.status(400).json({message:'Số điện thoại chưa đúng định dạng'});
