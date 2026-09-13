@@ -1,0 +1,117 @@
+/* VINH EXAM V13 — unified violet/charcoal palette. Loaded last on purpose. */
+:root{
+  --v13-black:#05050b;
+  --v13-charcoal:#101017;
+  --v13-violet:#8063e8;
+  --v13-violet-2:#a06ce4;
+  --v13-magenta:#d36ab8;
+  --v13-fog:#f0eef5;
+  --v13-muted:#aaa5b6;
+  --v13-glass:rgba(255,255,255,.055);
+  --v13-line:rgba(255,255,255,.115);
+  --v13-grad:linear-gradient(125deg,#7760db 0%,#9a69df 52%,#d06bb7 100%);
+}
+
+/* LANDING: one continuous surface, no blue/cyan split */
+#login.login-shell.flowstate-v11{
+  background:
+    radial-gradient(70% 90% at 84% 12%,rgba(160,82,174,.22) 0%,rgba(112,65,164,.09) 38%,transparent 68%),
+    radial-gradient(65% 75% at 10% 88%,rgba(92,65,160,.17) 0%,rgba(71,49,130,.07) 42%,transparent 72%),
+    radial-gradient(42% 52% at 51% 48%,rgba(113,80,178,.07),transparent 72%),
+    var(--v13-black)!important;
+}
+/* Disable the old cyan-capable fluid canvas; ambient motion remains via orbits + animated violet/magenta glows. */
+#login.flowstate-v11 .auth-flow-canvas-v10{display:none!important}
+#login.flowstate-v11 .auth-flow-scrim-v10{
+  background:radial-gradient(92% 88% at 50% 48%,rgba(5,5,11,.18) 0%,rgba(5,5,11,.28) 48%,rgba(5,5,11,.62) 100%)!important;
+}
+#login.flowstate-v11:before{
+  background:radial-gradient(circle,rgba(126,92,220,.56),rgba(126,92,220,.12) 38%,transparent 70%)!important;
+  opacity:.27!important;
+  filter:blur(72px)!important;
+}
+#login.flowstate-v11:after{
+  background:radial-gradient(circle,rgba(210,90,176,.52),rgba(174,83,177,.10) 40%,transparent 70%)!important;
+  opacity:.25!important;
+  filter:blur(78px)!important;
+}
+
+/* The central hero must blend into the page instead of becoming a purple rectangle. */
+#login.flowstate-v11 .login-hero{
+  background:transparent!important;
+  background-image:none!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  backdrop-filter:none!important;
+  outline:0!important;
+}
+#login.flowstate-v11 .login-hero:before,
+#login.flowstate-v11 .login-hero:after{display:none!important;content:none!important}
+#login.flowstate-v11 .login-hero h1{color:#f1eff6!important;text-shadow:0 10px 46px rgba(0,0,0,.30)!important}
+#login.flowstate-v11 .login-hero>p{color:#aaa5b6!important}
+#login.flowstate-v11 .login-hero .eyebrow,
+#login.flowstate-v11 .auth-proof-v10 span,
+.flow-nav-links-v11,.flow-glass-btn-v11,.flow-cta-bar-v11{
+  background:rgba(255,255,255,.045)!important;
+  border-color:rgba(255,255,255,.105)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 14px 40px rgba(0,0,0,.12)!important;
+}
+.flow-nav-links-v11 button,.flow-glass-btn-v11{color:#b7b2c1!important}
+.flow-nav-links-v11 button:hover,.flow-glass-btn-v11:hover{color:#fff!important;background:rgba(255,255,255,.075)!important}
+.flow-white-btn-v11{
+  background:#f2f0f5!important;color:#16141d!important;border-color:#f2f0f5!important;
+  box-shadow:0 10px 32px rgba(0,0,0,.20)!important;
+}
+.flow-white-btn-v11:hover{background:#fff!important}
+.flow-cta-copy-v11 span,.flow-footer-v11{color:#8f899b!important}
+
+/* Ambient geometry: keep motion but remove cyan points. */
+.v12-orbit{border-color:rgba(178,160,218,.09)!important;filter:drop-shadow(0 0 18px rgba(128,99,232,.10))!important}
+.v12-orbit:after{background:#9b7be8!important;box-shadow:0 0 18px rgba(155,123,232,.75)!important}
+.v12-orbit.o2:after{background:#d879bd!important;box-shadow:0 0 18px rgba(216,121,189,.72)!important}
+.v12-spark{background:#d9d1ea!important;box-shadow:0 0 14px rgba(191,171,228,.55)!important}
+
+/* AUTH: same violet/charcoal language, no cyan streaks */
+#login.flowstate-v11 .login-card{
+  background:linear-gradient(160deg,rgba(20,18,27,.96),rgba(9,9,14,.97))!important;
+  border-color:rgba(207,190,224,.12)!important;
+}
+#login.flowstate-v11 .login-card:before{background:var(--v13-grad)!important;box-shadow:0 0 24px rgba(147,99,213,.36)!important}
+#login.flowstate-v11 .login-card .logo{background:var(--v13-grad)!important}
+#login.flowstate-v11 .login-card input:focus,
+#login.flowstate-v11 .login-card select:focus,
+#login.flowstate-v11 .login-card textarea:focus{
+  border-color:rgba(155,111,219,.64)!important;
+  box-shadow:0 0 0 4px rgba(135,94,210,.11),0 8px 28px rgba(0,0,0,.12)!important;
+}
+#login.flowstate-v11 .role-card-v8.active{
+  background:linear-gradient(140deg,rgba(126,92,220,.12),rgba(166,101,210,.13),rgba(211,106,184,.08))!important;
+  border-color:rgba(164,126,221,.38)!important;
+}
+#login.flowstate-v11 .role-icon-v8{
+  background:linear-gradient(145deg,rgba(126,92,220,.20),rgba(166,101,210,.19),rgba(211,106,184,.13))!important;
+}
+#login.flowstate-v11 .subject-chip-v8 input:checked+span{
+  background:linear-gradient(135deg,rgba(126,92,220,.13),rgba(211,106,184,.09))!important;
+  border-color:rgba(158,119,217,.40)!important;
+}
+
+/* APP: remove leftover cyan accents so the brand reads as one system */
+#app{--brand:#765fd0!important;--brand2:#c46caf!important}
+#app .brand .logo{background:var(--v13-grad)!important}
+#app .main{
+  background:
+    radial-gradient(circle at 90% -4%,rgba(128,99,232,.10),transparent 25%),
+    radial-gradient(circle at 58% 108%,rgba(196,108,175,.055),transparent 28%),
+    #f3f2f0!important;
+}
+#app .hero:before{
+  background:conic-gradient(from 210deg,rgba(126,92,220,.34),rgba(155,102,219,.24),rgba(211,106,184,.26),rgba(126,92,220,.34))!important;
+}
+#app .class-cover,#app .class-card-v9:nth-child(2n) .class-cover,#app .class-card-v9:nth-child(3n) .class-cover{background:var(--v13-grad)!important}
+#app .progress>span{background:var(--v13-grad)!important}
+#app .v12-panel-dot{background:var(--v13-grad)!important;box-shadow:0 0 12px rgba(128,99,232,.24)!important}
+#app .badge.info{background:#f0ecf8!important;color:#6b54b9!important}
+
+@media (prefers-reduced-motion:reduce){#login.flowstate-v11:before,#login.flowstate-v11:after{animation:none!important}}
