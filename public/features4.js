@@ -89,7 +89,7 @@
     const q=window.__exam.questions[i];if(!q||!$('#questionPreviewV4'))return;
     const text=$('#eqText')?.value??q.text??'';
     $('#questionPreviewV4').innerHTML=`<div class="preview-question-v4"><div class="preview-num-v4">Câu ${i+1} · ${Number($('#eqPoints')?.value||q.points||1)} điểm</div><div class="preview-text-v4">${esc(text||'Nội dung câu hỏi sẽ hiển thị tại đây')}</div>${galleryV4(q,true)}</div>`;
-    setTimeout(()=>window.MathJax?.typesetPromise?.([$('#questionPreviewV4')]).catch(()=>{}),0);
+    setTimeout(()=>window.renderMath([$('#questionPreviewV4')]).catch(()=>{}),0);
   };
 
   window.uploadQuestionImageV4=async(i,file)=>{

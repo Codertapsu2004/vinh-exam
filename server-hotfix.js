@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const Module = require('module');
 
+require('./scripts/build-client')();
+
 const target = path.join(__dirname, 'server-v2.js');
 let code = fs.readFileSync(target, 'utf8');
 
@@ -74,7 +76,8 @@ const migrationSql = [
   'server-v5-migration.sql',
   'server-v6-migration.sql',
   'server-v8-migration.sql',
-  'server-v9-migration.sql'
+  'server-v9-migration.sql',
+  'server-play-migration.sql'
 ].map(f=>fs.readFileSync(path.join(__dirname,f),'utf8')).join('\n');
 const migrationMarker = "  if (process.env.SEED_ON_BOOT === 'true') await seed();";
 if (!code.includes(migrationMarker)) throw new Error('VINH EXAM extras: migration marker not found');
@@ -97,4 +100,5 @@ code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker.replace("vinh-exam
 const m = new Module(target, module.parent);
 m.filename = target;
 m.paths = Module._nodeModulePaths(__dirname);
-m._compile(code, target);
+if (require.main === module) m._compile(code, target);
+module.exports = { code };

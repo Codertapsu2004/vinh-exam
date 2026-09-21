@@ -129,6 +129,6 @@ async function monitorPayloadV6(assignmentId,teacherId){
 }
 app.get('/api/teacher/monitor/:id/stream-v6',auth,role('teacher'),async(req,res,next)=>{try{
   const first=await monitorPayloadV6(req.params.id,req.user.id);if(!first)return res.status(403).end();res.setHeader('Content-Type','text/event-stream');res.setHeader('Cache-Control','no-cache, no-transform');res.setHeader('Connection','keep-alive');res.flushHeaders?.();let closed=false;
-  const send=async()=>{if(closed)return;try{const d=await monitorPayloadV6(req.params.id,req.user.id);if(d)res.write(`data: ${JSON.stringify(d)}\n\n`)}catch{}};await send();const timer=setInterval(send,2000);req.on('close',()=>{closed=true;clearInterval(timer)});
+  let sending=false;const send=async()=>{if(closed||sending)return;sending=true;try{const d=await monitorPayloadV6(req.params.id,req.user.id);if(d&&!closed)res.write(`data: ${JSON.stringify(d)}\n\n`)}catch{}finally{sending=false}};const timer=setInterval(send,3000);req.on('close',()=>{closed=true;clearInterval(timer)});await send();
 }catch(e){next(e)}});
 app.get('/api/teacher/assignments/:id/proctor-report',auth,role('teacher'),async(req,res,next)=>{try{const d=await monitorPayloadV6(req.params.id,req.user.id);if(!d)return res.status(404).json({message:'Không tìm thấy ca thi'});res.json(d)}catch(e){next(e)}});
