@@ -51,7 +51,7 @@ app.post('/api/teacher/imports', auth, role('teacher'), uploadV3.single('file'),
       warnings=(result.messages||[]).map(x=>x.message).slice(0,30);
       if(!questions.length) warnings.push('Không nhận diện chắc chắn cấu trúc câu hỏi. Tệp gốc vẫn được giữ để giáo viên rà soát thủ công.');
     }else if(kind==='pdf'){
-      const parsed=await pdfParseV3(req.file.buffer); text=parsed.text||''; questions=parseImportedQuestionsV3(text);
+      const parsed=await pdfParseV3(new Uint8Array(req.file.buffer)); text=parsed.text||''; questions=parseImportedQuestionsV3(text);
       warnings.push('PDF được trích xuất văn bản; bố cục phức tạp, hình và công thức cần giáo viên rà soát trước khi xuất bản.');
       if(!questions.length)warnings.push('Không nhận diện tự động được cấu trúc câu hỏi từ PDF này.');
     }else if(kind==='json'){

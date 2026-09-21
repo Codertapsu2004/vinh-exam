@@ -200,17 +200,17 @@ function gradeQuestions(questions, answers) {
 }
 
 async function finalizeExpiredAttempts() {
-  const rows = (await q(`SELECT at.id,at.answers,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.status='in_progress' AND at.deadline_at<=now() LIMIT 100`)).rows;
+  const rows = (await q(`SELECT at.id,at.answers,at.row_version,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.status='in_progress' AND at.deadline_at<=now() LIMIT 100`)).rows;
   for (const at of rows) {
     const g = gradeQuestions(at.questions, at.answers || {});
-    await q(`UPDATE attempts SET status=$1,score=$2,submitted_at=COALESCE(submitted_at,now()) WHERE id=$3 AND status='in_progress'`, [g.pending?'pending_manual':'graded',g.score,at.id]);
+    await q(`UPDATE attempts SET status=$1,score=$2,submitted_at=COALESCE(submitted_at,now()) WHERE id=$3 AND status='in_progress' AND row_version=$4 AND deadline_at<=clock_timestamp()`, [g.pending?'pending_manual':'graded',g.score,at.id,at.row_version]);
   }
 }
 
 app.get('/api/student/dashboard', auth, role('student'), async (req,res,next) => {
   try {
     await finalizeExpiredAttempts();
-    const rows = (await q(`SELECT a.id assignment_id,a.title,a.open_at,a.close_at,a.duration,e.title exam_title,c.name class_name,at.id attempt_id,at.status,at.score,at.submitted_at
+    const rows = (await q(`SELECT a.id assignment_id,a.title,a.open_at,a.close_at,a.duration,e.title exam_title,c.name class_name,at.id attempt_id,at.status,CASE WHEN a.show_score AND at.status='graded' THEN at.score ELSE NULL END score,at.submitted_at
       FROM enrollments en JOIN classes c ON c.id=en.class_id JOIN assignments a ON a.class_id=c.id JOIN exams e ON e.id=a.exam_id
       LEFT JOIN attempts at ON at.assignment_id=a.id AND at.student_id=$1 WHERE en.student_id=$1 ORDER BY a.open_at DESC`, [req.user.id])).rows;
     res.json({ assignments:rows, now:new Date().toISOString() });
@@ -231,46 +231,57 @@ app.post('/api/student/start/:id', auth, role('student'), async (req,res,next) =
 app.get('/api/student/attempt/:id', auth, role('student'), async (req,res,next) => {
   try {
     await finalizeExpiredAttempts();
-    const r = await q(`SELECT at.*,a.title,a.duration,e.title exam_title,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`, [req.params.id,req.user.id]);
+    const r = await q(`SELECT at.*,a.show_score,a.title,a.duration,e.title exam_title,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`, [req.params.id,req.user.id]);
     if (!r.rowCount) return res.status(404).json({ message:'Không tìm thấy lượt thi' });
     const x = r.rows[0];
     const questions = (x.questions || []).map(({answer,explanation,tolerance,...safe}) => safe);
-    res.json({ attempt:{ id:x.id,status:x.status,deadlineAt:x.deadline_at,lastSavedAt:x.last_saved_at,answers:x.answers||{},score:x.score,title:x.title,examTitle:x.exam_title,questions } });
+    res.json({ attempt:{ id:x.id,status:x.status,deadlineAt:x.deadline_at,lastSavedAt:x.last_saved_at,rowVersion:x.row_version,serverNow:new Date().toISOString(),answers:x.answers||{},score:x.show_score&&x.status==='graded'?x.score:null,title:x.title,examTitle:x.exam_title,questions } });
   } catch (e) { next(e); }
 });
 app.post('/api/student/attempt/:id/save', auth, role('student'), async (req,res,next) => {
   try {
-    const r = await q(`UPDATE attempts SET answers=$1,last_saved_at=now(),row_version=row_version+1 WHERE id=$2 AND student_id=$3 AND status='in_progress' AND deadline_at>now() RETURNING last_saved_at,row_version`, [JSON.stringify(req.body.answers||{}),req.params.id,req.user.id]);
-    if (!r.rowCount) return res.status(409).json({ message:'Không thể lưu: bài đã nộp hoặc hết giờ' });
+    const version=req.body.rowVersion;
+    if(version!==undefined && (!Number.isInteger(version)||version<0)) return res.status(400).json({message:'Phiên bản bài làm không hợp lệ'});
+    if(!req.body.answers || typeof req.body.answers!=='object' || Array.isArray(req.body.answers)) return res.status(400).json({message:'Câu trả lời không hợp lệ'});
+    const r = await q(`UPDATE attempts SET answers=$1,last_saved_at=clock_timestamp(),row_version=row_version+1 WHERE id=$2 AND student_id=$3 AND status='in_progress' AND deadline_at>clock_timestamp() AND ($4::int IS NULL OR row_version=$4) RETURNING last_saved_at,row_version`, [JSON.stringify(req.body.answers),req.params.id,req.user.id,version??null]);
+    if (!r.rowCount) return res.status(409).json({code:'ANSWER_CONFLICT',message:'Bài đã thay đổi, đã nộp hoặc hết giờ. Hãy mở lại bài để đồng bộ.'});
     res.json({ savedAt:r.rows[0].last_saved_at,rowVersion:r.rows[0].row_version });
   } catch (e) { next(e); }
 });
 app.post('/api/student/attempt/:id/submit', auth, role('student'), async (req,res,next) => {
+  let client;
   try {
-    const r = await q(`SELECT at.*,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`, [req.params.id,req.user.id]);
-    if (!r.rowCount) return res.status(404).json({ message:'Không tìm thấy lượt thi' });
-    const at = r.rows[0];
-    if (at.status !== 'in_progress') return res.json({ ok:true,status:at.status,score:at.score });
-    const g = gradeQuestions(at.questions, at.answers||{});
-    await q(`UPDATE attempts SET status=$1,score=$2,submitted_at=now(),last_saved_at=now() WHERE id=$3`, [g.pending?'pending_manual':'graded',g.score,at.id]);
+    client=await pool.connect();
+    await client.query('BEGIN');
+    const r = await client.query(`SELECT at.*,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2 FOR UPDATE OF at`, [req.params.id,req.user.id]);
+    if (!r.rowCount) {await client.query('ROLLBACK');return res.status(404).json({message:'Không tìm thấy lượt thi'});}
+    const at=r.rows[0];
+    if(at.status!=='in_progress'){await client.query('COMMIT');return res.json({ok:true,status:at.status});}
+    if(req.body.rowVersion!==undefined && req.body.rowVersion!==at.row_version){await client.query('ROLLBACK');return res.status(409).json({code:'ANSWER_CONFLICT',message:'Bài đang được sửa ở cửa sổ khác. Hãy mở lại bài trước khi nộp.'});}
+    const g=gradeQuestions(at.questions,at.answers||{}), status=g.pending?'pending_manual':'graded';
+    await client.query(`UPDATE attempts SET status=$1,score=$2,submitted_at=clock_timestamp() WHERE id=$3`,[status,g.score,at.id]);
+    await client.query('COMMIT');
     await audit(req.user.id,'attempt.submitted',{attemptId:at.id,score:g.score,pending:g.pending});
-    res.json({ ok:true,status:g.pending?'pending_manual':'graded',score:g.pending?null:g.score });
-  } catch (e) { next(e); }
+    res.json({ok:true,status});
+  } catch(e){if(client)await client.query('ROLLBACK').catch(()=>{});next(e)}
+  finally{client?.release()}
 });
 app.get('/api/student/result/:id', auth, role('student'), async (req,res,next) => {
   try {
     await finalizeExpiredAttempts();
-    const r = await q(`SELECT at.id,at.status,at.score,at.submitted_at,at.manual_comment,a.title,e.title exam_title,e.max_score FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`, [req.params.id,req.user.id]);
+    const r = await q(`SELECT at.id,at.status,CASE WHEN a.show_score AND at.status='graded' THEN at.score ELSE NULL END score,at.submitted_at,at.manual_comment,a.title,e.title exam_title,e.max_score FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`, [req.params.id,req.user.id]);
     if (!r.rowCount) return res.status(404).json({ message:'Không tìm thấy kết quả' });
     res.json({ result:r.rows[0] });
   } catch (e) { next(e); }
 });
 app.get('/api/student/result/:id/review', auth, role('student'), async (req,res,next) => {
   try {
-    const r = await q(`SELECT at.status,at.answers,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`, [req.params.id,req.user.id]);
+    const r = await q(`SELECT at.status,at.answers,a.show_answers,a.show_explanations,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`, [req.params.id,req.user.id]);
     if (!r.rowCount) return res.status(404).json({message:'Không tìm thấy bài làm'});
     if (r.rows[0].status !== 'graded') return res.status(409).json({message:'Bài chưa chấm xong'});
-    res.json({ answers:r.rows[0].answers,questions:r.rows[0].questions });
+    if(!r.rows[0].show_answers)return res.status(403).json({message:'Đáp án chưa được công bố'});
+    const questions=r.rows[0].questions.map(q=>{const item={...q};if(!r.rows[0].show_explanations)delete item.explanation;return item});
+    res.json({ answers:r.rows[0].answers,questions });
   } catch (e) { next(e); }
 });
 
@@ -425,8 +436,7 @@ app.patch('/api/admin/users/:id/status', auth, role('admin'), async (req,res,nex
 app.get('/api/admin/audit', auth, role('admin'), async (req,res,next) => { try { res.json({logs:(await q(`SELECT a.id,a.action,a.meta,a.created_at,u.name,u.login FROM audit a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.created_at DESC LIMIT 200`)).rows}); } catch(e){next(e)} });
 
 app.get('/api/health', (req,res) => res.json({ok:true,service:'vinh-exam-v2',time:new Date().toISOString()}));
-app.use(express.static(path.join(__dirname,'public')));
-app.get('*', (req,res) => res.sendFile(path.join(__dirname,'public','index.html')));
+require('./scripts/serve-client')(app,express);
 app.use((err,req,res,next) => { console.error(err); res.status(500).json({message:'Lỗi máy chủ'}); });
 
 const port = Number(process.env.PORT || 3000);

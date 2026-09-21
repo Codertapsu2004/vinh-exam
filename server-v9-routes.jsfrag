@@ -24,7 +24,7 @@ app.get('/api/student/dashboard-v9', auth, role('student'), async(req,res,next)=
   await finalizeExpiredAttempts();
   const rows=(await q(`SELECT a.id assignment_id,a.class_id,a.title,a.open_at,a.close_at,a.duration,a.assignment_kind,
     e.title exam_title,e.subject,c.name class_name,u.name teacher_name,
-    at.id attempt_id,at.status,at.score,at.submitted_at,at.deadline_at
+    at.id attempt_id,at.status,CASE WHEN a.show_score AND at.status='graded' THEN at.score ELSE NULL END score,at.submitted_at,at.deadline_at
     FROM enrollments en JOIN classes c ON c.id=en.class_id
     JOIN assignments a ON a.class_id=c.id JOIN exams e ON e.id=a.exam_id
     LEFT JOIN users u ON u.id=c.teacher_id
@@ -51,7 +51,7 @@ app.get('/api/student/classes/:id/detail-v9', auth, role('student'), async(req,r
     WHERE en.student_id=$1 AND c.id=$2`,[req.user.id,req.params.id])).rows[0];
   if(!cls)return res.status(404).json({message:'Bạn không thuộc lớp học này'});
   const rows=(await q(`SELECT a.id assignment_id,a.title,a.open_at,a.close_at,a.duration,a.assignment_kind,
-    e.title exam_title,e.subject,at.id attempt_id,at.status,at.score,at.submitted_at,at.deadline_at
+    e.title exam_title,e.subject,at.id attempt_id,at.status,CASE WHEN a.show_score AND at.status='graded' THEN at.score ELSE NULL END score,at.submitted_at,at.deadline_at
     FROM assignments a JOIN exams e ON e.id=a.exam_id
     LEFT JOIN attempts at ON at.assignment_id=a.id AND at.student_id=$1
     WHERE a.class_id=$2 ORDER BY a.open_at DESC`,[req.user.id,req.params.id])).rows;
