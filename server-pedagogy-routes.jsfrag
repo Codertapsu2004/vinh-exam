@@ -1,0 +1,130 @@
+const ExamTools = require('./public/exam-tools');
+const releaseOpen = (flag,mode,closeAt) => !!flag && (mode==='immediate'||(mode==='after_close'&&Date.now()>=new Date(closeAt).getTime()));
+const activitySettings = a => ({duration:a.duration,maxAttempts:a.max_attempts,scoreMode:a.show_score?a.score_release:'manual',answerMode:a.show_answers?a.answer_release:'manual',showExplanations:a.show_explanations,shuffleQuestions:a.shuffle_questions,proctorMode:a.proctor_config?.mode||'off',instructions:a.instructions||''});
+function validQuestionsForSave(raw,published){
+  if(!Array.isArray(raw)||raw.length>300)throw Error('Đề cần một danh sách tối đa 300 câu.');
+  const ids=new Set();
+  const questions=raw.map(x=>{
+    const id=String(x.id||uuid());if(!/^[\w-]{1,100}$/.test(id)||ids.has(id))throw Error('Mã câu hỏi không hợp lệ hoặc bị trùng.');ids.add(id);
+    const points=Number(x.points??1);if(!Number.isFinite(points)||points<0)throw Error('Điểm câu hỏi không hợp lệ.');
+    if(!['single','tf','number','essay'].includes(x.type))throw Error('Loại câu hỏi không hợp lệ.');
+    return {...x,id,text:String(x.text||'').slice(0,20000),points,explanation:String(x.explanation||'').slice(0,20000),simulation:ExamTools.simulation(x.simulation)};
+  });
+  if(published){const errors=ExamTools.questionErrors(questions);if(errors.length)throw Error(errors.slice(0,6).join('\n'));}
+  return questions;
+}
+const snapshotSql = `UPDATE assignments a SET exam_snapshot=jsonb_build_object('title',source.title,'subject',source.subject,'questions',source.questions,'max_score',source.max_score,'sections',source.sections,'revision',source.edit_revision) FROM exams source WHERE source.id=a.exam_id AND a.exam_id=$1 AND a.exam_snapshot IS NULL AND EXISTS(SELECT 1 FROM attempts t WHERE t.assignment_id=a.id)`;
+
+app.put('/api/teacher/exams/:id',auth,role('teacher'),async(req,res,next)=>{
+  const client=await pool.connect();try{
+    await client.query('BEGIN');
+    const exam=(await client.query('SELECT * FROM exams WHERE id=$1 AND owner_id=$2 FOR UPDATE',[req.params.id,req.user.id])).rows[0];
+    if(!exam){await client.query('ROLLBACK');return res.status(404).json({message:'Không tìm thấy đề'});}
+    if(req.body.expectedRevision!==undefined&&Number(req.body.expectedRevision)!==exam.edit_revision){await client.query('ROLLBACK');return res.status(409).json({code:'EXAM_CONFLICT',message:'Đề đã được sửa ở cửa sổ khác. Sao chép phần đang soạn rồi tải lại đề trước khi lưu.'});}
+    let questions,config;try{questions=validQuestionsForSave(req.body.questions,exam.status==='published');config=ExamTools.settings({...exam.exam_config,...req.body.config,duration:req.body.duration??exam.duration});}catch(e){await client.query('ROLLBACK');return res.status(400).json({message:e.message});}
+    const title=String(req.body.title||'').trim();if(!title){await client.query('ROLLBACK');return res.status(400).json({message:'Tên đề không được để trống.'});}
+    for(const question of questions)question.images=await normalizeBankImagesV5(question.images,req.user.id);
+    await client.query(snapshotSql,[exam.id]);
+    const ids=new Set(questions.map(x=>x.id));
+    const sections=(Array.isArray(req.body.sections)?req.body.sections:exam.sections||[]).map(s=>({...s,questionIds:(s.questionIds||[]).filter(id=>ids.has(id))}));
+    const max=+questions.reduce((sum,x)=>sum+x.points,0).toFixed(4);
+    const row=(await client.query(`UPDATE exams SET title=$1,subject=$2,duration=$3,max_score=$4,questions=$5,sections=$6,exam_config=$7,edit_revision=edit_revision+1,updated_at=now() WHERE id=$8 RETURNING *`,[title.slice(0,500),String(req.body.subject||'').slice(0,200),config.duration,max||10,JSON.stringify(questions),JSON.stringify(sections),JSON.stringify(config),exam.id])).rows[0];
+    const frozen=(await client.query('SELECT count(*)::int n FROM assignments WHERE exam_id=$1 AND exam_snapshot IS NOT NULL',[exam.id])).rows[0].n;
+    await client.query('COMMIT');await audit(req.user.id,'exam.edited_in_place',{examId:exam.id,revision:row.edit_revision,frozenAssignments:frozen});res.json({exam:row,frozenAssignments:frozen});
+  }catch(e){await client.query('ROLLBACK').catch(()=>{});next(e)}finally{client.release()}
+});
+app.post('/api/teacher/exams/:id/publish',auth,role('teacher'),async(req,res,next)=>{
+  const client=await pool.connect();try{
+    await client.query('BEGIN');const exam=(await client.query('SELECT * FROM exams WHERE id=$1 AND owner_id=$2 FOR UPDATE',[req.params.id,req.user.id])).rows[0];
+    if(!exam){await client.query('ROLLBACK');return res.status(404).json({message:'Không tìm thấy đề'});}
+    if(req.body.expectedRevision!==undefined&&Number(req.body.expectedRevision)!==exam.edit_revision){await client.query('ROLLBACK');return res.status(409).json({message:'Đề đã thay đổi. Hãy tải lại trước khi xuất bản.'});}
+    const errors=ExamTools.questionErrors(exam.questions);if(errors.length){await client.query('ROLLBACK');return res.status(400).json({message:errors.slice(0,8).join('\n'),errors});}
+    let config;try{config=ExamTools.settings({...exam.exam_config,...req.body.config,duration:req.body.config?.duration??exam.duration});}catch(e){await client.query('ROLLBACK');return res.status(400).json({message:e.message});}
+    const row=(await client.query(`UPDATE exams SET status='published',duration=$1,exam_config=$2,edit_revision=edit_revision+1,updated_at=now() WHERE id=$3 RETURNING *`,[config.duration,JSON.stringify(config),exam.id])).rows[0];
+    await client.query('COMMIT');await audit(req.user.id,'exam.published',{examId:exam.id,config});res.json({exam:row});
+  }catch(e){await client.query('ROLLBACK').catch(()=>{});next(e)}finally{client.release()}
+});
+app.get('/api/teacher/assignments/:id/settings',auth,role('teacher'),async(req,res,next)=>{try{
+  const row=(await q(`SELECT a.*,(SELECT count(*)::int FROM attempts WHERE assignment_id=a.id) attempts FROM assignments a JOIN classes c ON c.id=a.class_id WHERE a.id=$1 AND c.teacher_id=$2`,[req.params.id,req.user.id])).rows[0];
+  if(!row)return res.status(404).json({message:'Không tìm thấy bài giao'});res.json({assignment:row,config:activitySettings(row)});
+}catch(e){next(e)}});
+async function createConfiguredAssignment(req,res,next){try{
+  const cls=await ownedClass(req.body.classId,req.user.id),exam=await ownedExam(req.body.examId,req.user.id);
+  if(!cls||!exam)return res.status(403).json({message:'Không có quyền với lớp hoặc đề'});
+  if(exam.status!=='published')return res.status(409).json({message:'Cần xuất bản đề trước khi giao'});
+  const errors=ExamTools.questionErrors(exam.questions);if(errors.length)return res.status(400).json({message:'Hãy hoàn thiện đề trước khi giao: '+errors.slice(0,4).join(' ')});
+  let cfg;try{cfg=ExamTools.settings({...exam.exam_config,...req.body.config,duration:req.body.duration??req.body.config?.duration??exam.duration});}catch(e){return res.status(400).json({message:e.message})}
+  const open=new Date(req.body.openAt||Date.now()),close=new Date(req.body.closeAt||Date.now()+864e5);
+  if(!Number.isFinite(+open)||!Number.isFinite(+close)||close<=open)return res.status(400).json({message:'Giờ đóng phải sau giờ mở.'});
+  const row=(await q(`INSERT INTO assignments(exam_id,class_id,title,open_at,close_at,duration,max_attempts,assignment_kind,show_score,show_answers,show_explanations,score_release,answer_release,shuffle_questions,instructions,proctor_config) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,[exam.id,cls.id,String(req.body.title||exam.title).trim().slice(0,500),open,close,cfg.duration,cfg.maxAttempts,assignmentKindV9(req.body.assignmentKind),cfg.scoreMode!=='manual',cfg.answerMode!=='manual',cfg.showExplanations,cfg.scoreMode,cfg.answerMode,cfg.shuffleQuestions,cfg.instructions,JSON.stringify(normalizeProctorV6({mode:cfg.proctorMode}))])).rows[0];
+  await audit(req.user.id,'assignment.configured',{assignmentId:row.id,config:cfg});res.json({assignment:row});
+}catch(e){next(e)}}
+app.post(['/api/teacher/assignments','/api/teacher/assignments-v9'],auth,role('teacher'),createConfiguredAssignment);
+app.patch('/api/teacher/assignments/:id',auth,role('teacher'),async(req,res,next)=>{const client=await pool.connect();try{
+  await client.query('BEGIN');
+  const own=(await client.query('SELECT a.* FROM assignments a JOIN classes c ON c.id=a.class_id WHERE a.id=$1 AND c.teacher_id=$2 FOR UPDATE OF a',[req.params.id,req.user.id])).rows[0];if(!own){await client.query('ROLLBACK');return res.status(404).json({message:'Không tìm thấy bài giao'});}
+  let cfg;try{cfg=ExamTools.settings({...activitySettings(own),...req.body.config,duration:req.body.duration??req.body.config?.duration??own.duration});}catch(e){await client.query('ROLLBACK');return res.status(400).json({message:e.message})}
+  const open=new Date(req.body.openAt||own.open_at),close=new Date(req.body.closeAt||own.close_at);if(!Number.isFinite(+open)||!Number.isFinite(+close)||close<=open){await client.query('ROLLBACK');return res.status(400).json({message:'Giờ đóng phải sau giờ mở.'});}
+  const used=(await client.query('SELECT COALESCE(max(attempt_no),0)::int n FROM attempts WHERE assignment_id=$1',[own.id])).rows[0].n;if(cfg.maxAttempts<used){await client.query('ROLLBACK');return res.status(400).json({message:`Đã có học sinh làm ${used} lượt; không thể đặt ít hơn.`});}
+  const row=(await client.query(`UPDATE assignments SET title=$1,open_at=$2,close_at=$3,duration=$4,max_attempts=$5,show_score=$6,show_answers=$7,show_explanations=$8,score_release=$9,answer_release=$10,shuffle_questions=$11,instructions=$12,proctor_config=$13 WHERE id=$14 RETURNING *`,[String(req.body.title||own.title).trim(),open,close,cfg.duration,cfg.maxAttempts,cfg.scoreMode!=='manual',cfg.answerMode!=='manual',cfg.showExplanations,cfg.scoreMode,cfg.answerMode,cfg.shuffleQuestions,cfg.instructions,JSON.stringify(normalizeProctorV6({mode:cfg.proctorMode})),own.id])).rows[0];
+  await client.query('COMMIT');await audit(req.user.id,'assignment.settings_updated',{assignmentId:own.id});res.json({assignment:row});
+}catch(e){await client.query('ROLLBACK').catch(()=>{});next(e)}finally{client.release()}});
+app.post('/api/teacher/assignments/:id/policy',auth,role('teacher'),async(req,res,next)=>{try{
+  const scoreMode=req.body.scoreMode??(req.body.showScore?'immediate':'manual'),answerMode=req.body.answerMode??(req.body.showAnswers?'immediate':'manual');
+  if(!['immediate','after_close','manual'].includes(scoreMode)||!['immediate','after_close','manual'].includes(answerMode))return res.status(400).json({message:'Chế độ công bố không hợp lệ.'});
+  const row=(await q(`UPDATE assignments a SET show_score=$1,show_answers=$2,show_explanations=$3,score_release=$4,answer_release=$5 FROM classes c WHERE a.id=$6 AND c.id=a.class_id AND c.teacher_id=$7 RETURNING a.*`,[scoreMode!=='manual',answerMode!=='manual',!!req.body.showExplanations,scoreMode,answerMode,req.params.id,req.user.id])).rows[0];
+  if(!row)return res.status(404).json({message:'Không tìm thấy bài giao'});await audit(req.user.id,'assignment.policy_updated',{assignmentId:row.id,scoreMode,answerMode});res.json({assignment:row});
+}catch(e){next(e)}});
+app.get('/api/student/assignments/:id/info',auth,role('student'),async(req,res,next)=>{try{
+  const a=(await q(`SELECT a.*,e.title exam_title,e.max_score,jsonb_array_length(e.questions)::int question_count FROM assignments a JOIN exams e ON e.id=a.exam_id JOIN enrollments en ON en.class_id=a.class_id WHERE a.id=$1 AND en.student_id=$2`,[req.params.id,req.user.id])).rows[0];if(!a)return res.status(404).json({message:'Bài này không thuộc lớp của bạn'});
+  const latest=(await q('SELECT id,status,attempt_no FROM latest_attempts WHERE assignment_id=$1 AND student_id=$2',[a.id,req.user.id])).rows[0];
+  res.json({assignment:{id:a.id,title:a.title,examTitle:a.exam_title,questionCount:a.question_count,maxScore:a.max_score,openAt:a.open_at,closeAt:a.close_at},config:activitySettings(a),latest,serverNow:new Date().toISOString()});
+}catch(e){next(e)}});
+async function startConfiguredAttempt(req,res,next){
+  const client=await pool.connect();try{
+    await finalizeExpiredAttempts();await client.query('BEGIN');
+    const ref=(await client.query('SELECT a.exam_id FROM assignments a JOIN enrollments en ON en.class_id=a.class_id WHERE a.id=$1 AND en.student_id=$2',[req.params.id,req.user.id])).rows[0];
+    if(!ref){await client.query('ROLLBACK');return res.status(403).json({message:'Bài này không thuộc lớp của bạn'});}
+    const exam=(await client.query('SELECT * FROM exams WHERE id=$1 FOR UPDATE',[ref.exam_id])).rows[0];
+    const a=(await client.query('SELECT * FROM assignments WHERE id=$1 FOR UPDATE',[req.params.id])).rows[0];
+    if(Date.now()<+new Date(a.open_at)||Date.now()>=+new Date(a.close_at)){await client.query('ROLLBACK');return res.status(409).json({message:'Bài chưa mở hoặc đã hết thời gian làm.'});}
+    if(exam.status!=='published'){await client.query('ROLLBACK');return res.status(409).json({message:'Đề chưa được xuất bản.'});}
+    let at=(await client.query('SELECT * FROM latest_attempts WHERE assignment_id=$1 AND student_id=$2',[a.id,req.user.id])).rows[0];
+    if(!at||(req.body.retry===true&&at.status!=='in_progress')){
+      const no=(at?.attempt_no||0)+1;if(no>a.max_attempts){await client.query('ROLLBACK');return res.status(409).json({message:'Bạn đã dùng hết số lượt làm.'});}
+      const snap=a.exam_snapshot||{title:exam.title,subject:exam.subject,questions:exam.questions,max_score:exam.max_score,sections:exam.sections,revision:exam.edit_revision};
+      if(!a.exam_snapshot)await client.query('UPDATE assignments SET exam_snapshot=$1 WHERE id=$2',[JSON.stringify(snap),a.id]);
+      let groups=[];for(const item of snap.questions){let group=groups.find(g=>g.section===(item.sectionId||''));if(!group){group={section:item.sectionId||'',items:[]};groups.push(group);}group.items.push(item.id);}
+      if(a.shuffle_questions)for(const g of groups)for(let i=g.items.length-1;i>0;i--){const j=crypto.randomInt(i+1);[g.items[i],g.items[j]]=[g.items[j],g.items[i]];}
+      const order=a.shuffle_questions?groups.flatMap(g=>g.items):snap.questions.map(x=>x.id);
+      at=(await client.query(`INSERT INTO attempts(assignment_id,student_id,deadline_at,last_saved_at,attempt_no,question_order) VALUES($1,$2,LEAST(now()+($3||' minutes')::interval,$4),now(),$5,$6) RETURNING *`,[a.id,req.user.id,a.duration,a.close_at,no,JSON.stringify(order)])).rows[0];
+    }
+    await client.query('COMMIT');res.json({attemptId:at.id,status:at.status,attemptNo:at.attempt_no,serverNow:new Date().toISOString()});
+  }catch(e){await client.query('ROLLBACK').catch(()=>{});next(e)}finally{client.release()}
+}
+app.post(['/api/student/start/:id','/api/student/start-v9/:id'],auth,role('student'),startConfiguredAttempt);
+function safeStudentQuestion(item){
+  const out={id:item.id,type:item.type,text:item.text,points:item.points,images:item.images||[],sectionId:item.sectionId};
+  if(item.type==='single')out.options=item.options||[];if(item.type==='tf')out.statements=item.statements||[];
+  if(item.simulation?.visibility==='exam')out.simulation=ExamTools.simulation(item.simulation);
+  return out;
+}
+function orderedQuestions(row){const qs=row.questions||[],order=row.question_order||[];return order.length?order.map(id=>qs.find(x=>x.id===id)).filter(Boolean):qs;}
+app.get('/api/student/attempt/:id',auth,role('student'),async(req,res,next)=>{try{
+  await finalizeExpiredAttempts();const x=(await q(`SELECT at.*,a.show_score,a.score_release,a.close_at,a.title,a.instructions,e.title exam_title,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`,[req.params.id,req.user.id])).rows[0];if(!x)return res.status(404).json({message:'Không tìm thấy lượt làm'});
+  res.json({attempt:{id:x.id,status:x.status,attemptNo:x.attempt_no,deadlineAt:x.deadline_at,lastSavedAt:x.last_saved_at,rowVersion:x.row_version,serverNow:new Date().toISOString(),answers:x.answers||{},score:releaseOpen(x.show_score,x.score_release,x.close_at)&&x.status==='graded'?x.score:null,title:x.title,examTitle:x.exam_title,instructions:x.instructions,questions:orderedQuestions(x).map(safeStudentQuestion)}});
+}catch(e){next(e)}});
+async function publishedPayload(id,studentId){
+  const row=(await q(`SELECT at.*,a.title,a.close_at,a.max_attempts,a.show_score,a.show_answers,a.show_explanations,a.score_release,a.answer_release,e.title exam_title,e.max_score,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`,[id,studentId])).rows[0];if(!row)return null;
+  const policy={showScore:releaseOpen(row.show_score,row.score_release,row.close_at),showAnswers:releaseOpen(row.show_answers,row.answer_release,row.close_at),showExplanations:row.show_explanations,scoreMode:row.show_score?row.score_release:'manual',answerMode:row.show_answers?row.answer_release:'manual',closeAt:row.close_at};
+  policy.showExplanations=policy.showExplanations&&policy.showAnswers;
+  const result={id:row.id,status:row.status,submitted_at:row.submitted_at,manual_comment:row.manual_comment,title:row.title,exam_title:row.exam_title,max_score:row.max_score,score:policy.showScore&&row.status==='graded'?row.score:null,scorePublished:policy.showScore,assignmentId:row.assignment_id,attemptNo:row.attempt_no,maxAttempts:row.max_attempts};
+  const review=row.status==='graded'&&policy.showAnswers?{answers:row.answers,questions:orderedQuestions(row).map(item=>policy.showExplanations?item:{...item,explanation:undefined,simulation:undefined})}:null;
+  return {result,review,policy};
+}
+app.get(['/api/student/result/:id/published','/api/student/result/:id'],auth,role('student'),async(req,res,next)=>{try{await finalizeExpiredAttempts();const out=await publishedPayload(req.params.id,req.user.id);if(!out)return res.status(404).json({message:'Không tìm thấy kết quả'});res.json(out)}catch(e){next(e)}});
+app.get('/api/student/result/:id/review',auth,role('student'),async(req,res,next)=>{try{const out=await publishedPayload(req.params.id,req.user.id);if(!out)return res.status(404).json({message:'Không tìm thấy kết quả'});if(!out.review)return res.status(403).json({message:'Bài chưa chấm xong hoặc đáp án chưa được công bố.'});res.json(out.review)}catch(e){next(e)}});
+app.get('/api/student/history',auth,role('student'),async(req,res,next)=>{try{
+  const rows=(await q(`SELECT at.id attempt_id,at.status,at.attempt_no,a.title,c.name class_name,CASE WHEN a.show_score AND at.status='graded' THEN at.score ELSE NULL END score FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN classes c ON c.id=a.class_id WHERE at.student_id=$1 ORDER BY at.started_at DESC`,[req.user.id])).rows;res.json({items:rows});
+}catch(e){next(e)}});
+app.get('/api/notifications',auth,async(req,res,next)=>{try{const items=(await q('SELECT * FROM notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100',[req.user.id])).rows;res.json({items:items.map(x=>req.user.role==='student'&&x.meta?.attemptId?{...x,message:'Giáo viên đã cập nhật bài làm. Xem kết quả theo lịch công bố của lớp.'}:x)})}catch(e){next(e)}});

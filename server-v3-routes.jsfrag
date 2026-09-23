@@ -38,6 +38,20 @@ function kindFromFileV3(file){
   return 'unknown';
 }
 
+async function retainDocxImages(html,questions,ownerId){
+  let current=null,index=-1;
+  for(const block of String(html).match(/<(?:p|li|h[1-6])\b[^>]*>[\s\S]*?<\/(?:p|li|h[1-6])>/gi)||[]){
+    const plain=block.replace(/<[^>]+>/g,'').replace(/&nbsp;/g,' ').trim(),number=plain.match(/^(?:Câu|Bài|Question)\s*(\d+)/i);
+    if(number){const next=questions.findIndex((x,i)=>i>index&&x.questionNo===Number(number[1]));if(next>=0){index=next;current=questions[index];}else current=null;}
+    if(!current)continue;
+    for(const match of block.matchAll(/<img\b[^>]*\bsrc=["']data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\s]+)["']/gi)){
+      if((current.images||[]).length>=4)break;const bytes=Buffer.from(match[2],'base64');if(bytes.length>6*1024*1024)continue;
+      const row=(await q('INSERT INTO assets(owner_id,original_name,mime_type,size_bytes,data) VALUES($1,$2,$3,$4,$5) RETURNING id',[ownerId,`Hình câu ${current.questionNo}`,match[1],bytes.length,bytes])).rows[0];
+      current.images=[...(current.images||[]),{assetId:row.id,alt:`Hình câu ${current.questionNo}`,caption:''}];
+    }
+  }
+}
+
 app.post('/api/teacher/imports', auth, role('teacher'), uploadV3.single('file'), async(req,res,next)=>{try{
   if(!req.file)return res.status(400).json({message:'Hãy chọn tệp Word, PDF, JSON hoặc ảnh'});
   const kind=kindFromFileV3(req.file); if(kind==='unknown')return res.status(400).json({message:'Định dạng chưa được hỗ trợ'});
@@ -47,11 +61,12 @@ app.post('/api/teacher/imports', auth, role('teacher'), uploadV3.single('file'),
   try{
     if(kind==='docx'){
       const result=await mammothV3.convertToHtml({buffer:req.file.buffer},{convertImage:mammothV3.images.imgElement(async img=>({src:`data:${img.contentType};base64,${await img.read('base64')}`}))});
-      html=result.value||''; text=(await mammothV3.extractRawText({buffer:req.file.buffer})).value||''; questions=parseImportedQuestionsV3(text);
+      html=result.value||''; text=(await mammothV3.extractRawText({buffer:req.file.buffer})).value||''; questions=parseExamStructureV6(text).questions;
+      await retainDocxImages(html,questions,req.user.id);
       warnings=(result.messages||[]).map(x=>x.message).slice(0,30);
       if(!questions.length) warnings.push('Không nhận diện chắc chắn cấu trúc câu hỏi. Tệp gốc vẫn được giữ để giáo viên rà soát thủ công.');
     }else if(kind==='pdf'){
-      const parsed=await pdfParseV3(new Uint8Array(req.file.buffer)); text=parsed.text||''; questions=parseImportedQuestionsV3(text);
+      const parsed=await pdfParseV3(new Uint8Array(req.file.buffer)); text=parsed.text||''; questions=parseExamStructureV6(text).questions;
       warnings.push('PDF được trích xuất văn bản; bố cục phức tạp, hình và công thức cần giáo viên rà soát trước khi xuất bản.');
       if(!questions.length)warnings.push('Không nhận diện tự động được cấu trúc câu hỏi từ PDF này.');
     }else if(kind==='json'){

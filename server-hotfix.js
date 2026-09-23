@@ -30,7 +30,7 @@ const newGrade = `app.post('/api/teacher/grade/:id', auth, role('teacher'), asyn
     const total=+Math.min(Number(row.max_score||10),objectiveScore+manual).toFixed(2);
     await q(\`UPDATE attempts SET score=$1,status='graded',manual_comment=$2 WHERE id=$3\`,[total,String(req.body.comment||''),row.id]);
     await audit(req.user.id,'attempt.graded',{attemptId:row.id,score:total,objectiveScore,manual});
-    try{await notifyExtra(row.student_id,'Bài thi đã được chấm','Điểm hiện tại: '+total+'/'+row.max_score,'success',{attemptId:row.id})}catch{}
+    try{await notifyExtra(row.student_id,'Bài thi đã được chấm','Giáo viên đã hoàn tất chấm bài. Xem kết quả theo lịch công bố của lớp.','success',{attemptId:row.id})}catch{}
     res.json({ok:true,score:total,objectiveScore,manual});
   } catch(e){next(e)}
 });`;
@@ -77,7 +77,8 @@ const migrationSql = [
   'server-v6-migration.sql',
   'server-v8-migration.sql',
   'server-v9-migration.sql',
-  'server-play-migration.sql'
+  'server-play-migration.sql',
+  'server-pedagogy-migration.sql'
 ].map(f=>fs.readFileSync(path.join(__dirname,f),'utf8')).join('\n');
 const migrationMarker = "  if (process.env.SEED_ON_BOOT === 'true') await seed();";
 if (!code.includes(migrationMarker)) throw new Error('VINH EXAM extras: migration marker not found');
@@ -96,6 +97,18 @@ const extraRoutes = [
 const routeMarker = "app.get('/api/health', (req,res) => res.json({ok:true,service:'vinh-exam-v2',time:new Date().toISOString()}));";
 if (!code.includes(routeMarker)) throw new Error('VINH EXAM extras: route marker not found');
 code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker.replace("vinh-exam-v2","vinh-exam-v9"));
+const authoringRoutes=fs.readFileSync(path.join(__dirname,'server-pedagogy-routes.jsfrag'),'utf8');
+const authoringMarker="app.post('/api/auth/login', async (req,res,next) => {";
+if(!code.includes(authoringMarker))throw new Error('Authoring route marker not found');
+code=code.replace(authoringMarker,authoringRoutes+'\n'+authoringMarker);
+
+// All attempt, grading, review and asset readers use the same frozen activity content.
+// Only read joins are changed; exam authoring still writes the original exam id.
+code = code.replaceAll('JOIN exams e ON e.id=a.exam_id', 'JOIN assignment_exam_versions e ON e.assignment_id=a.id');
+// The view definition must read the underlying table, not itself.
+code = code.replace('FROM assignments a JOIN assignment_exam_versions e ON e.assignment_id=a.id;\nCREATE OR REPLACE VIEW latest_attempts', 'FROM assignments a JOIN exams e ON e.id=a.exam_id;\nCREATE OR REPLACE VIEW latest_attempts');
+code = code.replaceAll('LEFT JOIN attempts at ON', 'LEFT JOIN latest_attempts at ON');
+code = code.replaceAll("a.show_score AND at.status='graded'", "a.show_score AND (a.score_release='immediate' OR (a.score_release='after_close' AND now()>=a.close_at)) AND at.status='graded'");
 
 const m = new Module(target, module.parent);
 m.filename = target;

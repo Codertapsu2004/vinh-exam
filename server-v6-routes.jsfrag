@@ -17,7 +17,12 @@ function parseNumberV6(raw=''){
 }
 function parseExamStructureV6(text=''){
   const clean=String(text||'').replace(/\r/g,'').replace(/\u00a0/g,' ').replace(/[ \t]+\n/g,'\n').trim();
-  const lines=clean.split('\n').map(x=>x.trim()).filter(Boolean);
+  const metadata=ExamTools.metadata(clean);
+  const lines=clean.split('\n').flatMap(line=>{
+    const markers=[...line.matchAll(/(?:^|\s)([A-H])[.)]\s+/g)];
+    if(markers.length<2)return [line];
+    const pieces=[];let last=0;for(const m of markers){if(m.index>last)pieces.push(line.slice(last,m.index));last=m.index;}pieces.push(line.slice(last));return pieces;
+  }).map(x=>x.trim()).filter(Boolean);
   const answerKey={};
   for(const line of lines){
     const pairs=[...line.matchAll(/(?:^|\s)(\d{1,3})\s*[.\-:]?\s*([A-H])(?=\s|$|[,;])/gi)];
@@ -35,8 +40,10 @@ function parseExamStructureV6(text=''){
   const qStart=line=>line.match(/^(?:Câu|Bài|Question)\s*(\d{1,3})\s*[.):\-–]?\s*(.*)$/i);
   const flush=()=>{
     if(!qbuf)return;
-    const sec=qbuf.section||ensureSection(); const raws=qbuf.lines; const body=[]; const upper=[], lower=[]; let localAnswer='';
+    const sec=qbuf.section||ensureSection(); const raws=qbuf.lines; const body=[]; const upper=[], lower=[]; let localAnswer='',explanation='',inExplanation=false;
     for(const line of raws){
+      if(/^(?:Lời\s*giải|Giải\s*thích|Hướng\s*dẫn\s*giải)\s*[:：]?/i.test(line)){inExplanation=true;explanation+=line.replace(/^(?:Lời\s*giải|Giải\s*thích|Hướng\s*dẫn\s*giải)\s*[:：]?\s*/i,'')+'\n';continue;}
+      if(inExplanation){explanation+=line+'\n';continue;}
       let m=line.match(/^([A-H])\s*[.):\-]\s*(.+)$/);if(m){upper.push({k:m[1],v:m[2].trim()});continue}
       m=line.match(/^([a-d])\s*[).:\-]\s*(.+)$/);if(m){lower.push({k:m[1],v:m[2].trim()});continue}
       m=line.match(/^(?:Đáp\s*án|Dap\s*an|ĐA|Answer)\s*[:\-]\s*(.+)$/i);if(m){localAnswer=m[1].trim();continue}
@@ -49,7 +56,8 @@ function parseExamStructureV6(text=''){
     else if(sec.kind==='essay'){type='essay';confidence='high'}
     else {type='essay';confidence='low'}
     const textOut=[qbuf.lead,...body].filter(Boolean).join('\n').trim()||`Câu ${qbuf.no}`;
-    const item={id:uuid(),questionNo:qbuf.no,sectionId:sec.id,type,text:textOut,points:1,explanation:'',confidence,source:'pdf-structure-v6'};
+    const item={id:uuid(),questionNo:qbuf.no,sectionId:sec.id,type,text:textOut,points:1,explanation:explanation.trim(),confidence,source:'structure-v10'};
+    if(!questions.length&&ExamTools.headerQuestion(item)){qbuf=null;return;}
     if(type==='single'){
       item.options=upper.map(x=>x.v);const letter=(localAnswer.match(/[A-H]/i)?.[0]||answerKey[qbuf.no]||'').toUpperCase();item.answer=letter?'ABCDEFGH'.indexOf(letter):null;
       if(item.answer===null||item.answer<0)item.answer=null;
@@ -69,14 +77,18 @@ function parseExamStructureV6(text=''){
   const nonempty=sections.filter(s=>s.questionIds.length); if(nonempty.length!==sections.length){sections.splice(0,sections.length,...nonempty)}
   if(!sections.length&&questions.length){sections.push({id:'sec-1',title:'Phần I. Câu hỏi',kind:'mixed',questionIds:questions.map(q=>q.id),points:questions.length})}
   for(const sec of sections){sec.points=sec.questionIds.reduce((s,id)=>s+Number(questions.find(q=>q.id===id)?.points||0),0);if(sec.kind==='mixed'){const ks=[...new Set(questions.filter(q=>q.sectionId===sec.id).map(q=>q.type))];if(ks.length===1)sec.kind=ks[0]}}
-  return {questions:questions.slice(0,300),sections,meta:{lines:lines.length,questionCount:questions.length,sectionCount:sections.length,answerKeyCount:Object.keys(answerKey).length,analyzer:'structure-v6'}};
+  return {questions:questions.slice(0,300),sections,meta:{...metadata,lines:lines.length,questionCount:questions.length,sectionCount:sections.length,answerKeyCount:Object.keys(answerKey).length,analyzer:'structure-v10'}};
 }
 
 app.post('/api/teacher/imports/:id/analyze-v6',auth,role('teacher'),async(req,res,next)=>{try{
   const item=(await q(`SELECT * FROM import_jobs WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id])).rows[0];if(!item)return res.status(404).json({message:'Không tìm thấy tác vụ nhập'});
-  if(Number(item.analysis_version)>=6&&!req.body.force)return res.json({item,questions:item.draft_questions||[],sections:item.sections||[],meta:item.analysis_meta||{}});
+  const detected=ExamTools.metadata(item.extracted_text,item.original_name);
+  if((Number(item.analysis_version)>=6||item.kind==='json')&&!req.body.force)return res.json({item:{...item,analysis_meta:{...detected,...item.analysis_meta}},questions:item.draft_questions||[],sections:item.sections||[],meta:{...detected,...item.analysis_meta}});
   if(!String(item.extracted_text||'').trim())return res.status(400).json({message:'Tệp không có lớp văn bản để phân tích. PDF scan cần OCR trước khi phân loại tự động.'});
   const out=parseExamStructureV6(item.extracted_text);
+  out.meta={...detected,...out.meta,title:out.meta.title||detected.title};
+  // Keep imported illustrations already attached to the same numbered question.
+  for(const question of out.questions){const old=(item.draft_questions||[]).find(x=>x.questionNo===question.questionNo&&x.sectionId===question.sectionId);if(old?.images)question.images=old.images;}
   const warnings=Array.isArray(item.warnings)?[...item.warnings]:[];
   if(out.questions.some(x=>x.confidence==='low'))warnings.push('Một số câu có độ tin cậy nhận diện thấp; hãy kiểm tra loại câu trước khi tạo đề.');
   const updated=(await q(`UPDATE import_jobs SET draft_questions=$1,sections=$2,analysis_version=6,analysis_meta=$3,warnings=$4,updated_at=now() WHERE id=$5 RETURNING *`,[JSON.stringify(out.questions),JSON.stringify(out.sections),JSON.stringify(out.meta),JSON.stringify([...new Set(warnings)]),item.id])).rows[0];
@@ -94,7 +106,8 @@ app.post('/api/teacher/imports/:id/create-exam-v6',auth,role('teacher'),async(re
   const item=(await q(`SELECT * FROM import_jobs WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id])).rows[0];if(!item)return res.status(404).json({message:'Không tìm thấy tác vụ nhập'});
   const questions=(Array.isArray(req.body.questions)?req.body.questions:item.draft_questions||[]).slice(0,300);if(!questions.length)return res.status(400).json({message:'Chưa có câu hỏi để tạo đề'});
   const sections=Array.isArray(req.body.sections)?req.body.sections:item.sections||[];const max=+questions.reduce((s,x)=>s+Math.max(0,Number(x.points||0)),0).toFixed(4);
-  const exam=(await q(`INSERT INTO exams(title,subject,duration,max_score,questions,sections,owner_id,status,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,'draft',now()) RETURNING *`,[String(req.body.title||item.original_name.replace(/\.[^.]+$/,'')).trim(),String(req.body.subject||''),Math.max(1,Number(req.body.duration||45)),max||10,JSON.stringify(questions),JSON.stringify(sections),req.user.id])).rows[0];
+  const metadata={...ExamTools.metadata(item.extracted_text,item.original_name),...item.analysis_meta};
+  const exam=(await q(`INSERT INTO exams(title,subject,duration,max_score,questions,sections,owner_id,status,updated_at,exam_config) VALUES($1,$2,$3,$4,$5,$6,$7,'draft',now(),$8) RETURNING *`,[String(req.body.title||metadata.title||item.original_name.replace(/\.[^.]+$/,'')).trim(),String(req.body.subject||metadata.subject||''),Math.max(1,Number(req.body.duration||metadata.duration||45)),max||10,JSON.stringify(questions),JSON.stringify(sections),req.user.id,JSON.stringify({instructions:metadata.instructions||''})])).rows[0];
   await q(`UPDATE import_jobs SET draft_questions=$1,sections=$2,updated_at=now() WHERE id=$3`,[JSON.stringify(questions),JSON.stringify(sections),item.id]);await audit(req.user.id,'import.exam_created_v6',{importId:item.id,examId:exam.id,maxScore:max,sections:sections.length});res.json({exam});
 }catch(e){next(e)}});
 

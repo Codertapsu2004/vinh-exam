@@ -2,7 +2,7 @@ function gradeQuestionsV9(questions, answers) {
   let score = 0, pending = false;
   for (const item of questions || []) {
     const ans = answers?.[item.id];
-    if (item.type === 'single' && Number(ans) === Number(item.answer)) score += Number(item.points || 0);
+    if (item.type === 'single' && ans !== null && ans !== undefined && ans !== '' && item.answer !== null && Number(ans) === Number(item.answer)) score += Number(item.points || 0);
     else if (item.type === 'tf' && Array.isArray(ans)) {
       const key = Array.isArray(item.answer) ? item.answer : [];
       const correct = key.filter((v,i) => ans[i] === v).length;

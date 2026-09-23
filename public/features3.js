@@ -48,6 +48,7 @@
       const d=await api('/student/result/'+id+'/published'),r=d.result,policy=d.policy||{};
       page('Kết quả bài thi','',`<button class="btn ghost" onclick="route('home')">← Bài của bạn</button>`,
         `<div class="result-hero"><div><div class="eyebrow">${esc(r.exam_title)}</div><h2>${policy.showScore&&r.score!=null?`${r.score} / ${r.max_score}`:'Điểm chưa công bố'}</h2><p>${esc(r.title)} · nộp ${fmt(r.submitted_at)}</p></div><div class="result-ring ${r.status==='graded'?'done':''}">${r.status==='graded'?'✓':'…'}</div></div>
+        ${window.renderPublicationSummary?renderPublicationSummary(r,policy):''}
         ${r.manual_comment?`<div class="panel"><div class="panel-body"><strong>Nhận xét giáo viên</strong><p>${esc(r.manual_comment)}</p></div></div>`:''}
         ${d.review&&policy.showAnswers?`<div class="panel"><div class="panel-head"><h3>Xem lại bài làm</h3><span class="badge info">${policy.showExplanations?'Đáp án & lời giải':'Đáp án'}</span></div><div class="panel-body">${renderScienceReview(d.review,policy)}</div></div>`:`<div class="panel"><div class="empty"><strong>Đáp án chưa được công bố</strong><span>Giáo viên có thể mở quyền xem lại sau.</span></div></div>`}`);
     } catch(e) {

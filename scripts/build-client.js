@@ -5,8 +5,8 @@ const zlib = require('node:zlib');
 
 const root = path.join(__dirname, '..', 'public');
 function bundle() {
-  const js = ['client-libs.js', 'autosave.js', 'app.js', 'mobile.js', 'features2.js', 'features3.js', 'features4.js', 'features5.js', 'features6.js', 'features9.js', 'features9-scoring.js', 'play.js', 'science.js', 'auth-v8.js'];
-  const css = ['styles.css', 'premium-v3.css', 'premium-v4.css', 'premium-v5.css', 'premium-v6.css', 'features9.css', 'play.css', 'science.css'];
+  const js = ['client-libs.js', 'autosave.js', 'exam-tools.js', 'app.js', 'mobile.js', 'features2.js', 'features3.js', 'features4.js', 'features5.js', 'features6.js', 'features9.js', 'features9-scoring.js', 'play.js', 'science.js', 'pedagogy.js', 'auth-v8.js'];
+  const css = ['styles.css', 'premium-v3.css', 'premium-v4.css', 'premium-v5.css', 'premium-v6.css', 'features9.css', 'play.css', 'science.css', 'pedagogy.css'];
   const result = {};
   for (const [ext, files] of [['js', js], ['css', css]]) {
     const text = files.map(file => fs.readFileSync(path.join(root, file), 'utf8')).join(ext === 'js' ? '\n;\n' : '\n') + (ext === 'js' ? '\nboot();\n' : '');
