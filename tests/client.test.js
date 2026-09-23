@@ -29,7 +29,7 @@ test('login submits once; all core scripts are installed before boot; exam filte
     d.querySelector('#loginForm').dispatchEvent(new w.Event('submit',{cancelable:true}));
     d.querySelector('#loginForm').dispatchEvent(new w.Event('submit',{cancelable:true}));
     await tick();await tick();assert.equal(logins,1);assert.equal(d.querySelector('#app').classList.contains('hidden'),false);
-    assert.match(d.querySelector('#page').textContent,/Học thật/);assert.equal(d.querySelectorAll('.nav-btn').length,8);
+    assert.match(d.querySelector('#page').textContent,/Việc cần xử lý hôm nay/);assert.equal(d.querySelectorAll('.nav-btn').length,8);
     await w.route('exams');assert.equal(d.querySelectorAll('.exam-card').length,2);
     const search=d.querySelector('#examSearch');search.value='dao';search.dispatchEvent(new w.Event('input'));
     assert.equal(d.querySelectorAll('.exam-card').length,1);assert.match(d.querySelector('.exam-card').textContent,/Dao động/);assert.equal(lists,1);
