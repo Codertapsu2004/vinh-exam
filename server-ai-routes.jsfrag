@@ -1,0 +1,45 @@
+const aiSolutions=require('./lib/ai-solutions').createService({q,pool});
+async function ownedReleaseAssignment(id,teacherId,tx=null){
+ const db=tx?tx.query.bind(tx):q;
+ return (await db(`SELECT a.*,c.teacher_id,c.name class_name,e.title exam_title,e.subject,e.questions,e.max_score FROM assignments a JOIN classes c ON c.id=a.class_id JOIN assignment_exam_versions e ON e.assignment_id=a.id WHERE a.id=$1 AND c.teacher_id=$2 ${tx?'FOR UPDATE OF a':''}`,[id,teacherId])).rows[0];
+}
+app.get('/api/teacher/assignments/:id/release',auth,role('teacher'),async(req,res,next)=>{try{
+ const a=await ownedReleaseAssignment(req.params.id,req.user.id);if(!a)return res.status(404).json({message:'Không tìm thấy bài giao'});
+ const counts=(await q("SELECT count(*) FILTER(WHERE status='graded')::int graded,count(*) FILTER(WHERE status='pending_manual')::int pending FROM attempts WHERE assignment_id=$1",[a.id])).rows[0];
+ res.json({assignment:{id:a.id,title:a.title,showScore:a.show_score,showAnswers:a.show_answers,showExplanations:a.show_explanations,aiEnabled:a.ai_enabled,scoreMode:a.score_release,answerMode:a.answer_release,closeAt:a.close_at},context:aiSolutions.defaults(a),counts,aiConfigured:aiSolutions.provider.configured(),job:await aiSolutions.summary(a.ai_job_id,req.query.progress!=='1')});
+}catch(e){next(e)}});
+app.post('/api/teacher/assignments/:id/release',auth,role('teacher'),async(req,res,next)=>{
+ const tx=await pool.connect();try{await tx.query('BEGIN');const a=await ownedReleaseAssignment(req.params.id,req.user.id,tx);if(!a){await tx.query('ROLLBACK');return res.status(404).json({message:'Không tìm thấy bài giao'});}
+ const policy=aiSolutions.policy(req.body,a);const job=await aiSolutions.applyPolicy(tx,a,policy);await tx.query('COMMIT');await audit(req.user.id,'assignment.results_released',{assignmentId:a.id,score:policy.score,answers:policy.answers,ai:policy.ai,timing:policy.timing});void aiSolutions.pump();res.json({ok:true,jobId:job?.id,aiConfigured:aiSolutions.provider.configured()});
+ }catch(e){await tx.query('ROLLBACK').catch(()=>{});if(e.status||/Cần |lựa chọn|Lựa chọn|Thời điểm|giới hạn|Đề chưa/.test(e.message))return res.status(e.status||400).json({message:e.message});next(e)}finally{tx.release()}
+});
+app.post('/api/teacher/attempts/:id/grade-and-release',auth,role('teacher'),async(req,res,next)=>{
+ const tx=await pool.connect();try{
+  await tx.query('BEGIN');const ref=(await tx.query('SELECT assignment_id FROM attempts WHERE id=$1',[req.params.id])).rows[0];
+  const a=ref&&await ownedReleaseAssignment(ref.assignment_id,req.user.id,tx);if(!a){await tx.query('ROLLBACK');return res.status(404).json({message:'Không tìm thấy bài làm'});}
+  const attempt=(await tx.query("SELECT * FROM attempts WHERE id=$1 AND status IN('pending_manual','graded') FOR UPDATE",[req.params.id])).rows[0];if(!attempt){await tx.query('ROLLBACK');return res.status(409).json({message:'Học sinh chưa nộp bài.'});}
+  const max=(a.questions||[]).filter(x=>x.type==='essay').reduce((n,x)=>n+Number(x.points||0),0),manual=Number(req.body.points);
+  if(!Number.isFinite(manual)||manual<0||manual>max){await tx.query('ROLLBACK');return res.status(400).json({message:`Điểm tự luận cần từ 0 đến ${max}.`});}
+  const publication=req.body.publication?aiSolutions.policy(req.body.publication,a):null;
+  const objective=gradeQuestions(a.questions.filter(x=>x.type!=='essay'),attempt.answers||{}).score,total=+Math.min(Number(a.max_score),objective+manual).toFixed(2);
+  await tx.query("UPDATE attempts SET score=$1,status='graded',manual_comment=$2 WHERE id=$3",[total,String(req.body.comment||'').slice(0,10000),attempt.id]);
+  let job=null;if(publication)job=await aiSolutions.applyPolicy(tx,a,publication);
+  await tx.query('COMMIT');await audit(req.user.id,'attempt.graded_with_publication',{attemptId:attempt.id,assignmentId:a.id,score:total,publication:publication?{score:publication.score,answers:publication.answers,ai:publication.ai,timing:publication.timing}:null});void aiSolutions.pump();
+  res.json({ok:true,score:total,assignmentId:a.id,jobId:job?.id,aiConfigured:aiSolutions.provider.configured()});
+ }catch(e){await tx.query('ROLLBACK').catch(()=>{});if(e.status||/Cần |Lựa chọn|Thời điểm/.test(e.message))return res.status(e.status||400).json({message:e.message});next(e)}finally{tx.release()}
+});
+app.post('/api/teacher/assignments/:id/ai-retry',auth,role('teacher'),async(req,res,next)=>{try{
+ const a=await ownedReleaseAssignment(req.params.id,req.user.id);if(!a)return res.status(404).json({message:'Không tìm thấy bài giao'});
+ if(!a.ai_enabled||!a.ai_job_id)return res.status(409).json({message:'Chưa bật lời giải AI cho bài này.'});
+ if(!aiSolutions.provider.configured())return res.status(503).json({message:'Máy chủ chưa kết nối AI.'});
+ const rows=(await q("UPDATE ai_solution_items SET status='pending',reason='',solution=NULL,updated_at=now() WHERE job_id=$1 AND status IN('error','needs_review') AND tries<3 RETURNING id",[a.ai_job_id])).rows;
+ await audit(req.user.id,'assignment.ai_retry',{assignmentId:a.id,questions:rows.length});void aiSolutions.pump();res.json({ok:true,retried:rows.length});
+}catch(e){next(e)}});
+
+app.get('/api/teacher/attempts/:id/grading',auth,role('teacher'),async(req,res,next)=>{try{
+ const attempt=(await q(`SELECT at.*,u.name student_name FROM attempts at JOIN users u ON u.id=at.student_id JOIN assignments a ON a.id=at.assignment_id JOIN classes c ON c.id=a.class_id WHERE at.id=$1 AND c.teacher_id=$2`,[req.params.id,req.user.id])).rows[0];
+ if(!attempt)return res.status(404).json({message:'Không tìm thấy bài làm'});
+ const a=await ownedReleaseAssignment(attempt.assignment_id,req.user.id);
+ const objectiveScore=gradeQuestions(a.questions.filter(x=>x.type!=='essay'),attempt.answers||{}).score,maxManual=a.questions.filter(x=>x.type==='essay').reduce((n,x)=>n+Number(x.points||0),0);
+ res.json({attempt:{...attempt,questions:a.questions,exam_title:a.exam_title},objectiveScore,maxManual,manualPoints:attempt.status==='graded'?Math.max(0,Number(attempt.score)-objectiveScore):0,release:{assignment:{id:a.id,showScore:a.show_score,showAnswers:a.show_answers,showExplanations:a.show_explanations,aiEnabled:a.ai_enabled,scoreMode:a.score_release,answerMode:a.answer_release},context:aiSolutions.defaults(a),aiConfigured:aiSolutions.provider.configured()}});
+}catch(e){next(e)}});

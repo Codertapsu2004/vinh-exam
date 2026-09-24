@@ -1,0 +1,62 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const path=require('node:path');
+const Module=require('node:module');
+const {PGlite}=require('@electric-sql/pglite');
+const {createProvider,normalizeSolution}=require('../lib/ai-provider');
+const {createService}=require('../lib/ai-solutions');
+const V=require('../public/solution-models');
+const visual={kind:'motion',caption:'Chuyển động của vật',xLabel:'t (s)',yLabel:'x (m)',xMin:0,xMax:4,yMin:0,yMax:20,timeEnd:4,bodies:[{label:'Vật A',x0:0,v0:2,acceleration:1}]};
+const solution=(q)=>({status:'ready',reason:'',knowledge:['Chuyển động thẳng biến đổi đều'],steps:[{title:'Chọn công thức',text:'Thay số và tính theo đơn vị SI.',formula:'\\(x=v_0t+\\frac12at^2\\)'}],conclusion:'Kết quả được tính từ các dữ kiện của đề.',commonMistake:'Đổi đơn vị trước khi thay số.',answer:q.answer??null,visual});
+test('AI provider calls real API shape twice, strips student data, accepts verified JSON and flags wrong keys',async()=>{
+ const calls=[];const q={id:'q',type:'number',text:'x=?',answer:16,tolerance:0,studentName:'PRIVATE',studentAnswer:'PRIVATE'};
+ const provider=createProvider({env:{OPENAI_API_KEY:'test-only'},fetchImpl:async(url,options)=>{calls.push({url,body:JSON.parse(options.body)});return {ok:true,json:async()=>({status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify(calls.length===1?solution(q):{correct:true,answerMatches:true,gradeAppropriate:true,visualMatches:true,reason:''})}]}]})};}});
+ const out=await provider.generate(q,{grade:10,subject:'Vật lí',lesson:'Chuyển động'});assert.equal(out.status,'ready');assert.equal(calls.length,2);assert.equal(calls[0].url,'https://api.openai.com/v1/responses');assert.equal(calls[0].body.store,false);assert.equal(calls[0].body.text.format.strict,true);assert.ok(!JSON.stringify(calls).includes('PRIVATE'));
+ assert.equal(normalizeSolution({...solution(q),answer:9},q).status,'needs_review');
+ const unavailable=createProvider({env:{}});assert.equal(unavailable.configured(),false);await assert.rejects(()=>unavailable.generate(q,{grade:10}),/chưa kết nối/);
+});
+test('visuals render escaped data and preserve geometry scales; non-finite or executable shapes are rejected',()=>{
+ const html=V.render({...visual,caption:'<img src=x onerror=alert(1)>'});assert.ok(html.includes('&lt;img'));assert.ok(!html.includes('<img'));assert.notEqual(V.drawing(visual,0),V.drawing(visual,2));assert.match(V.values(visual,2),/x = 6.000/);
+ const wave={...visual,yMin:-3,yMax:3,kind:'wave',amplitude:2,period:2,phase:0,wavelength:4,direction:1};assert.notEqual(V.drawing(wave,0),V.drawing(wave,0.5));assert.throws(()=>V.normalize({...wave,direction:0}));
+ assert.throws(()=>V.normalize({...visual,timeEnd:Infinity}));assert.throws(()=>V.normalize({...visual,kind:'javascript'}));
+ const geometry={kind:'diagram',caption:'Tam giác',xLabel:'',yLabel:'',xMin:0,xMax:10,yMin:0,yMax:5,points:[{id:'a',x:0,y:0,label:'A'},{id:'b',x:0,y:3,label:'B'},{id:'c',x:4,y:0,label:'C'}],segments:[{from:'a',to:'b',label:'3',dashed:false}],circles:[{x:2,y:2,r:1,label:''}]};assert.match(V.drawing(geometry),/<circle/);assert.throws(()=>V.normalize({...geometry,segments:[{from:'missing',to:'a',label:''}]}));
+});
+test('grading and publication use one transaction; AI jobs persist, cache once, respect ownership and all release gates', {timeout:120000},async t=>{
+ const db=new PGlite();
+ const query=async(sql,params=[])=>{sql=sql.replace('CREATE EXTENSION IF NOT EXISTS pgcrypto;','');const r=params.length?await db.query(sql,params):(await db.exec(sql)).at(-1);return {...r,rowCount:Math.max(r?.affectedRows||0,r?.rows?.length||0)};};
+ const pool={query,connect:async()=>({query,release(){}})};
+ let enabled=false,generated=0;
+ const provider={configured:()=>enabled,model:()=> 'test-model',generate:async q=>{generated++;return q.id==='q2'?{...solution(q),status:'needs_review',reason:'Thiếu điều kiện của đề'}:solution(q);}};
+ const code=require('../server-hotfix').code,filename=path.join(__dirname,'..','server-v2.js'),mod=new Module(filename,module);mod.filename=filename;mod.paths=Module._nodeModulePaths(path.dirname(filename));const normal=mod.require.bind(mod);
+ mod.require=name=>name==='pg'?{Pool:function(){return pool}}:name==='./lib/ai-solutions'?{createService:opts=>{const service=createService({...opts,provider});service.pump=async()=>{};return service;}}:normal(name);
+ mod._compile(code.slice(0,code.indexOf('const port = Number(process.env.PORT'))+'\nmodule.exports={app,migrate,aiSolutions};',filename);await mod.exports.migrate();
+ const server=mod.exports.app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));t.after(async()=>{await new Promise(r=>server.close(r));await db.close();});
+ const base='http://127.0.0.1:'+server.address().port+'/api';
+ async function api(url,{body,cookie,method=body?'POST':'GET',status=200}={}){const r=await fetch(base+url,{method,headers:{'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{})},...(body?{body:JSON.stringify(body)}:{})});const data=await r.json();assert.equal(r.status,status,JSON.stringify(data));return {data,cookie:r.headers.get('set-cookie')?.split(';')[0]};}
+ const tc=(await api('/auth/register',{body:{role:'teacher',login:'ai-teacher',name:'Giáo viên',password:'TestOnly123',subjects:['Vật lí']},status:201})).cookie;
+ const sc=(await api('/auth/register',{body:{role:'student',login:'ai-student',name:'Học sinh',password:'TestOnly123',grade:'11'},status:201})).cookie;
+ const other=(await api('/auth/register',{body:{role:'teacher',login:'ai-other',name:'Khác',password:'TestOnly123',subjects:['Toán']},status:201})).cookie;
+ const cls=(await api('/teacher/classes',{cookie:tc,body:{name:'Vật lí 11',subject:'Vật lí 11'}})).data.class;await api('/teacher/classes/'+cls.id+'/students',{cookie:tc,body:{login:'ai-student',name:'Học sinh'}});
+ const questions=[{id:'q1',aiSolution:{status:'ready',steps:[],conclusion:'IMPORTED_UNAPPROVED'},type:'single',text:'Chọn kết quả',options:['0','1'],answer:1,points:2},{id:'q2',type:'essay',text:'Giải thích chuyển động',points:3}];
+ const exam=(await api('/teacher/exams',{cookie:tc,body:{title:'Dao động lớp 11',subject:'Vật lí 11',duration:45,questions}})).data.exam;await api('/teacher/exams/'+exam.id+'/publish',{cookie:tc,body:{}});
+ const assignment=(await api('/teacher/assignments',{cookie:tc,body:{classId:cls.id,examId:exam.id,openAt:new Date(Date.now()-1000).toISOString(),closeAt:new Date(Date.now()+600000).toISOString()}})).data.assignment;
+ const id=(await api('/student/start-v9/'+assignment.id,{cookie:sc,body:{}})).data.attemptId;
+ await api('/student/attempt/'+id+'/save',{cookie:sc,body:{rowVersion:0,answers:{q1:1,q2:'Bài giải'}}});await api('/student/attempt/'+id+'/submit',{cookie:sc,body:{rowVersion:1}});
+ const endpoint='/teacher/assignments/'+assignment.id+'/release';await api(endpoint,{cookie:sc,status:403});await api(endpoint,{cookie:other,status:404});
+ const publication={score:false,answers:true,ai:true,explanations:true,timing:'immediate',context:{grade:11,subject:'Vật lí',lesson:'Dao động',scope:'Chưa học đạo hàm'}};
+ await api('/teacher/attempts/'+id+'/grade-and-release',{cookie:tc,body:{points:1,publication:{...publication,context:{grade:13}}},status:400});
+ assert.equal((await query('SELECT status FROM attempts WHERE id=$1',[id])).rows[0].status,'pending_manual');
+ const graded=(await api('/teacher/attempts/'+id+'/grade-and-release',{cookie:tc,body:{points:1,comment:'Cần đọc kỹ đơn vị',publication}})).data;assert.equal(graded.score,3);assert.equal(graded.aiConfigured,false);
+ const pending=(await api(endpoint,{cookie:tc})).data;assert.equal(pending.job.status,'waiting_connection');assert.equal(pending.context.grade,11);
+ const firstJob=pending.job.id;await api(endpoint,{cookie:tc,body:publication});assert.equal((await api(endpoint,{cookie:tc})).data.job.id,firstJob);
+ const beforeGeneration=(await api('/student/result/'+id+'/published',{cookie:sc})).data;assert.equal(beforeGeneration.result.score,null);assert.ok(!JSON.stringify(beforeGeneration).includes('IMPORTED_UNAPPROVED'));
+ enabled=true;assert.equal(await mod.exports.aiSolutions.runOne(),true);assert.equal(await mod.exports.aiSolutions.runOne(),true);assert.equal(await mod.exports.aiSolutions.runOne(),false);assert.equal(generated,2);
+ const reviewed=(await api('/student/result/'+id+'/published',{cookie:sc})).data;assert.equal(reviewed.review.questions[0].aiSolution.status,'ready');assert.equal(reviewed.review.questions[1].aiSolution,null);assert.equal(reviewed.review.ai.ready,1);assert.equal(reviewed.result.score,null);
+ const configured=(await api('/teacher/attempts/'+id+'/grading',{cookie:tc})).data;assert.equal(configured.objectiveScore,2);assert.equal(configured.manualPoints,1);
+ await api(endpoint,{cookie:tc,body:{...publication,score:true,ai:false,answers:false,explanations:false}});
+ for(const url of ['/student/result/'+id,'/student/result/'+id+'/published']){const r=(await api(url,{cookie:sc})).data;assert.equal(Number(r.result.score),3);assert.equal(r.review,null);assert.ok(!JSON.stringify(r).includes('Chọn công thức'));}
+ await api('/student/result/'+id+'/review',{cookie:sc,status:403});
+ await api(endpoint,{cookie:tc,body:{...publication,score:true,timing:'after_close'}});let closed=(await api('/student/result/'+id+'/published',{cookie:sc})).data;assert.equal(closed.result.score,null);assert.equal(closed.review,null);
+ await query("UPDATE assignments SET close_at=now()-interval '1 second' WHERE id=$1",[assignment.id]);closed=(await api('/student/result/'+id+'/published',{cookie:sc})).data;assert.equal(Number(closed.result.score),3);assert.ok(closed.review.questions[0].aiSolution);assert.equal(generated,2);
+ const resumed=createService({q:query,pool,provider});assert.equal((await resumed.summary(firstJob,true)).ready,1);
+});
