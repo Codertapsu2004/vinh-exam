@@ -79,7 +79,8 @@ const migrationSql = [
   'server-v9-migration.sql',
   'server-play-migration.sql',
   'server-pedagogy-migration.sql',
-  'server-ai-migration.sql'
+  'server-ai-migration.sql',
+  'server-prepared-migration.sql'
 ].map(f=>fs.readFileSync(path.join(__dirname,f),'utf8')).join('\n');
 const migrationMarker = "  if (process.env.SEED_ON_BOOT === 'true') await seed();";
 if (!code.includes(migrationMarker)) throw new Error('VINH EXAM extras: migration marker not found');
@@ -98,7 +99,7 @@ const extraRoutes = [
 const routeMarker = "app.get('/api/health', (req,res) => res.json({ok:true,service:'vinh-exam-v2',time:new Date().toISOString()}));";
 if (!code.includes(routeMarker)) throw new Error('VINH EXAM extras: route marker not found');
 code = code.replace(routeMarker, extraRoutes+'\n'+routeMarker.replace("vinh-exam-v2","vinh-exam-v9"));
-const authoringRoutes=fs.readFileSync(path.join(__dirname,'server-ai-routes.jsfrag'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'server-pedagogy-routes.jsfrag'),'utf8');
+const authoringRoutes=['server-ai-routes.jsfrag','server-prepared-routes.jsfrag','server-pedagogy-routes.jsfrag'].map(f=>fs.readFileSync(path.join(__dirname,f),'utf8')).join('\n');
 const authoringMarker="app.post('/api/auth/login', async (req,res,next) => {";
 if(!code.includes(authoringMarker))throw new Error('Authoring route marker not found');
 code=code.replace(authoringMarker,authoringRoutes+'\n'+authoringMarker);

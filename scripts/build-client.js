@@ -5,7 +5,7 @@ const zlib = require('node:zlib');
 
 const root = path.join(__dirname, '..', 'public');
 function bundle() {
-  const js = ['client-libs.js', 'autosave.js', 'exam-tools.js', 'solution-models.js', 'app.js', 'mobile.js', 'features2.js', 'features3.js', 'features4.js', 'features5.js', 'features6.js', 'features9.js', 'features9-scoring.js', 'play.js', 'science.js', 'pedagogy.js', 'ai-review.js', 'auth-v8.js'];
+  const js = ['client-libs.js', 'autosave.js', 'exam-tools.js', 'solution-models.js', 'app.js', 'mobile.js', 'features2.js', 'features3.js', 'features4.js', 'features5.js', 'features6.js', 'features9.js', 'features9-scoring.js', 'play.js', 'science.js', 'pedagogy.js', 'ai-review.js', 'prepared-review.js', 'auth-v8.js'];
   const css = ['styles.css', 'premium-v3.css', 'premium-v4.css', 'premium-v5.css', 'premium-v6.css', 'features9.css', 'play.css', 'science.css', 'pedagogy.css', 'ai-review.css'];
   const result = {};
   for (const [ext, files] of [['js', js], ['css', css]]) {

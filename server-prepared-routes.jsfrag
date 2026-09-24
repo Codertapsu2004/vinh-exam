@@ -1,0 +1,19 @@
+const preparedSolutions=require('./lib/prepared-solutions').createPreparedService({q});
+app.get('/api/teacher/assignments/:id/solutions/template',auth,role('teacher'),async(req,res,next)=>{try{
+ const a=await ownedReleaseAssignment(req.params.id,req.user.id);if(!a)return res.status(404).json({message:'Không tìm thấy bài giao'});
+ res.json({package:await preparedSolutions.template(a)});
+}catch(e){next(e)}});
+app.post('/api/teacher/assignments/:id/solutions/preview',auth,role('teacher'),async(req,res,next)=>{try{
+ const a=await ownedReleaseAssignment(req.params.id,req.user.id);if(!a)return res.status(404).json({message:'Không tìm thấy bài giao'});
+ const prepared=await preparedSolutions.preview(a,req.body.content);
+ res.json(prepared);
+}catch(e){if(e.status)return res.status(e.status).json({message:e.message});next(e)}});
+app.post('/api/teacher/assignments/:id/solutions',auth,role('teacher'),async(req,res,next)=>{
+ const tx=await pool.connect();try{
+  await tx.query('BEGIN');const a=await ownedReleaseAssignment(req.params.id,req.user.id,tx);
+  if(!a){await tx.query('ROLLBACK');return res.status(404).json({message:'Không tìm thấy bài giao'});}
+  const prepared=await preparedSolutions.save(tx,a,req.body);
+  await tx.query('COMMIT');await audit(req.user.id,'assignment.solutions_imported',{assignmentId:a.id,setId:prepared.id,questions:prepared.ready,visuals:prepared.visuals});
+  res.json({ok:true,prepared});
+ }catch(e){await tx.query('ROLLBACK').catch(()=>{});if(e.status)return res.status(e.status).json({message:e.message});next(e)}finally{tx.release()}
+});
