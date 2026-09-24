@@ -32,9 +32,9 @@ app.post('/api/teacher/assignments/:id/ai-retry',auth,role('teacher'),async(req,
  const a=await ownedReleaseAssignment(req.params.id,req.user.id);if(!a)return res.status(404).json({message:'Không tìm thấy bài giao'});
  if(!a.ai_enabled||!a.ai_job_id)return res.status(409).json({message:'Chưa bật lời giải AI cho bài này.'});
  if(!aiSolutions.provider.configured())return res.status(503).json({message:'Máy chủ chưa kết nối AI.'});
- const rows=(await q("UPDATE ai_solution_items SET status='pending',reason='',solution=NULL,updated_at=now() WHERE job_id=$1 AND status IN('error','needs_review') AND tries<3 RETURNING id",[a.ai_job_id])).rows;
- await audit(req.user.id,'assignment.ai_retry',{assignmentId:a.id,questions:rows.length});void aiSolutions.pump();res.json({ok:true,retried:rows.length});
-}catch(e){next(e)}});
+ const retried=await aiSolutions.retry(a.ai_job_id);
+ await audit(req.user.id,'assignment.ai_retry',{assignmentId:a.id,questions:retried});void aiSolutions.pump();res.json({ok:true,retried});
+}catch(e){if(e.status===429)return res.status(429).json({message:e.message});next(e)}});
 
 app.get('/api/teacher/attempts/:id/grading',auth,role('teacher'),async(req,res,next)=>{try{
  const attempt=(await q(`SELECT at.*,u.name student_name FROM attempts at JOIN users u ON u.id=at.student_id JOIN assignments a ON a.id=at.assignment_id JOIN classes c ON c.id=a.class_id WHERE at.id=$1 AND c.teacher_id=$2`,[req.params.id,req.user.id])).rows[0];

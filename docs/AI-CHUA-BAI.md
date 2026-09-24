@@ -48,3 +48,11 @@ Tài liệu API đối chiếu:
 - https://developers.openai.com/api/docs/guides/structured-outputs
 - https://developers.openai.com/api/docs/guides/images-vision
 - https://developers.openai.com/api/docs/models/gpt-5.4
+
+## Khắc phục hàng loạt câu báo lỗi
+
+- Phân biệt lỗi khóa/quyền/model, cấu trúc API, hết số dư/hạn mức và giới hạn tốc độ. Nhật ký chỉ ghi mã phân loại, HTTP và mã lỗi nhà cung cấp; không ghi khóa, nội dung câu hoặc nguyên văn phản hồi lỗi.
+- Lỗi kết nối chung được lưu PostgreSQL và tạm dừng toàn bộ worker. Thiếu số dư/hạn mức không tự gọi lại; sau khi xử lý nguyên nhân, giáo viên bấm **Kiểm tra & thử lại**. Có thời gian chờ tối thiểu 60 giây giữa các lần kiểm tra; lỗi tốc độ/quá tải tuân thủ Retry-After và tự tiếp tục sau thời gian chờ.
+- Lỗi kết nối không trừ số lần thử lại nội dung. Lời giải sẵn sàng giữ nguyên; học sinh không nhận lỗi cấu hình riêng của máy chủ.
+- Một lần nâng cấp này xếp lại các câu từng lỗi ở phiên bản cũ chưa lưu mã lỗi, chỉ ở ca còn bật AI. Worker thử một câu trước; nếu kết nối vẫn lỗi, dừng các câu còn lại. Việc phục hồi có cờ trong PostgreSQL nên không lặp lại mỗi lần khởi động.
+- Thanh tiến độ đo số câu có lời giải sẵn sàng. Nguyên nhân kết nối hiển thị ngay phía trên; lỗi riêng từng câu được mở sẵn.

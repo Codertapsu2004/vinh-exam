@@ -6,6 +6,20 @@ const {PGlite}=require('@electric-sql/pglite');
 const {createProvider,normalizeSolution}=require('../lib/ai-provider');
 const {createService}=require('../lib/ai-solutions');
 const V=require('../public/solution-models');
+const {providerError}=require('../lib/ai-errors');
+test('provider distinguishes billing, speed limits, auth and schema errors without leaking response bodies',async()=>{
+ const secret='sk-PRIVATE-DO-NOT-EXPOSE';
+ const billing=providerError(429,{error:{type:'insufficient_quota',message:secret}});
+ assert.equal(billing.code,'AI_QUOTA');assert.equal(billing.automatic,false);assert.equal(billing.pause,true);assert.ok(!JSON.stringify(billing).includes(secret));assert.ok(!billing.message.includes(secret));
+ assert.equal(providerError(429,{error:{code:'credit_balance_exhausted'}}).code,'AI_CREDITS');
+ const speed=providerError(429,{error:{code:'rate_limit_exceeded'}},'180');assert.equal(speed.automatic,true);assert.equal(speed.retryAfterMs,180000);
+ assert.equal(providerError(401,{error:{message:secret}}).code,'AI_AUTH');
+ assert.equal(providerError(400,{error:{code:'invalid_json_schema'}}).code,'AI_SCHEMA');
+ assert.equal(providerError(400,{error:{code:'invalid_image'}}).needsReview,true);
+ let auth;
+ const p=createProvider({env:{OPENAI_API_KEY:'  '+secret+'  '},fetchImpl:async(_,options)=>{auth=options.headers.Authorization;return {ok:false,status:429,headers:{get:()=>null},json:async()=>({error:{code:'insufficient_quota',message:secret}})};}});
+ await assert.rejects(()=>p.generate({type:'number',text:'1+1',answer:2},{grade:6}),e=>e.code==='AI_QUOTA'&&!e.message.includes(secret));assert.equal(auth,'Bearer '+secret);
+});
 const visual={kind:'motion',caption:'Chuyển động của vật',xLabel:'t (s)',yLabel:'x (m)',xMin:0,xMax:4,yMin:0,yMax:20,timeEnd:4,bodies:[{label:'Vật A',x0:0,v0:2,acceleration:1}]};
 const solution=(q)=>({status:'ready',reason:'',knowledge:['Chuyển động thẳng biến đổi đều'],steps:[{title:'Chọn công thức',text:'Thay số và tính theo đơn vị SI.',formula:'\\(x=v_0t+\\frac12at^2\\)'}],conclusion:'Kết quả được tính từ các dữ kiện của đề.',commonMistake:'Đổi đơn vị trước khi thay số.',answer:q.answer??null,visual});
 test('AI provider calls real API shape twice, strips student data, accepts verified JSON and flags wrong keys',async()=>{
@@ -59,4 +73,19 @@ test('grading and publication use one transaction; AI jobs persist, cache once, 
  await api(endpoint,{cookie:tc,body:{...publication,score:true,timing:'after_close'}});let closed=(await api('/student/result/'+id+'/published',{cookie:sc})).data;assert.equal(closed.result.score,null);assert.equal(closed.review,null);
  await query("UPDATE assignments SET close_at=now()-interval '1 second' WHERE id=$1",[assignment.id]);closed=(await api('/student/result/'+id+'/published',{cookie:sc})).data;assert.equal(Number(closed.result.score),3);assert.ok(closed.review.questions[0].aiSolution);assert.equal(generated,2);
  const resumed=createService({q:query,pool,provider});assert.equal((await resumed.summary(firstJob,true)).ready,1);
+ await query("UPDATE ai_solution_items SET status='pending',tries=0,solution=NULL WHERE job_id=$1",[firstJob]);
+ let calls=0;provider.generate=async()=>{calls++;throw providerError(429,{error:{code:'insufficient_quota'}});};
+ assert.equal(await resumed.runOne(),true);assert.equal(await resumed.runOne(),false);assert.equal(calls,1);
+ const blocked=await resumed.summary(firstJob,true);assert.equal(blocked.status,'blocked');assert.equal(blocked.issue.code,'AI_QUOTA');assert.equal(blocked.remaining,2);assert.equal(blocked.items[0].tries,0);assert.equal(blocked.items[1].status,'pending');
+ const restarted=createService({q:query,pool,provider});assert.equal(await restarted.runOne(),false);assert.equal(calls,1);
+ await api('/teacher/assignments/'+assignment.id+'/ai-retry',{cookie:other,body:{},status:404});
+ await api('/teacher/assignments/'+assignment.id+'/ai-retry',{cookie:tc,body:{},status:429});
+ await query("UPDATE ai_provider_health SET issue=jsonb_set(issue,'{retryAt}',to_jsonb('2000-01-01T00:00:00.000Z'::text)) WHERE id=1");
+ provider.generate=async q=>{calls++;return solution(q);};
+ await api('/teacher/assignments/'+assignment.id+'/ai-retry',{cookie:tc,body:{}});
+ assert.equal(await restarted.runOne(),true);assert.equal(await restarted.runOne(),true);assert.equal(calls,3);assert.equal((await restarted.summary(firstJob)).ready,2);
+ // Repair legacy errors once, without changing ready solutions or student grades.
+ await query("UPDATE ai_solution_items SET status='error',error_code='',tries=3 WHERE job_id=$1 AND position=0",[firstJob]);await query('UPDATE ai_provider_health SET recovery_version=0 WHERE id=1');
+ const repair=createService({q:query,pool,provider});await repair.health();const repaired=await repair.summary(firstJob);assert.equal(repaired.items[0].status,'pending');assert.equal(repaired.items[0].tries,2);assert.equal(repaired.items[1].status,'ready');
+ await query("UPDATE ai_solution_items SET status='error' WHERE job_id=$1 AND position=0",[firstJob]);await createService({q:query,pool,provider}).health();assert.equal((await repair.summary(firstJob)).items[0].status,'error');
 });
