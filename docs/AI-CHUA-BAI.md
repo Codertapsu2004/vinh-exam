@@ -38,6 +38,8 @@ Các cấu hình khác:
 ## Hạn mức và phục hồi
 
 - Khi Groq giới hạn tốc độ hoặc hạn mức ngày, giao diện hiện nguyên nhân và thời điểm tự tiếp tục. Worker tuân thủ `Retry-After` hoặc thời gian chờ nhà cung cấp trả về; không gọi liên tục trong lúc chờ.
+- Thời gian chờ Groq không còn bị nâng lên tối thiểu 60 giây: dùng thời gian nhà cung cấp yêu cầu, tối thiểu một giây; worker kiểm tra mỗi năm giây. Khi Groq báo lượng yêu cầu lớn hơn toàn bộ hạn mức, câu được chuyển sang **Cần kiểm tra** thay vì thử lại cùng yêu cầu vô hạn.
+- Hướng dẫn dành cho model Groq được rút gọn, dùng chỉ dẫn tiếng Anh để giảm token; lời giải và nhận xét vẫn phải bằng tiếng Việt. Lượt kiểm tra giữ ảnh gốc và các tiêu chí kiến thức, lập luận, đáp án, đơn vị, hình vẽ.
 - Bản nháp được lưu PostgreSQL trước lượt kiểm tra. Nếu hết hạn mức ở lượt kiểm tra, lần tiếp tục chỉ kiểm tra bản nháp đã lưu, không yêu cầu tạo lại. Bản nháp chưa kiểm tra không được gửi cho học sinh.
 - Tiến độ, lời giải sẵn sàng và thời điểm chờ tồn tại qua lần khởi động lại máy chủ. Lỗi hạn mức/kết nối không trừ số lần thử lại nội dung.
 - Khóa sai, thiếu quyền hoặc model không khả dụng sẽ tạm dừng toàn bộ worker. Sau khi xử lý nguyên nhân, bấm **Kiểm tra & thử lại**; đổi cấu hình khóa/model và khởi động lại cũng đặt lại trạng thái kết nối.
@@ -68,7 +70,7 @@ Hình vẽ bằng SVG từ dữ liệu có cấu trúc; không thực thi HTML/J
 
 Chạy `node --test --test-concurrency=1 tests/*.test.js` và `npm run build`.
 
-Kiểm thử bao gồm quyền công bố độc lập với tạo AI, chấm tự luận, phân quyền, thời điểm công bố, mô phỏng, cấu trúc gửi Groq, không chuyển sang API trả phí, kiểm tra số học, lưu bản nháp qua hạn mức/khởi động lại và ngăn bản nháp lọt vào phản hồi học sinh. Nhật ký chỉ ghi mã phân loại, HTTP và mã lỗi nhà cung cấp; không ghi khóa hoặc nguyên văn lỗi có thể chứa đề.
+Kiểm thử bao gồm quyền công bố độc lập với tạo AI, chấm tự luận, phân quyền, thời điểm công bố, mô phỏng, cấu trúc gửi Groq, không chuyển sang API trả phí, kiểm tra số học, lưu bản nháp qua hạn mức/khởi động lại và ngăn bản nháp lọt vào phản hồi học sinh. Nhật ký chỉ ghi mã phân loại, HTTP, bước tạo/kiểm tra, số token, số ảnh/ký tự và các số hạn mức đã lọc; không ghi khóa, nội dung đề, lời giải hoặc nguyên văn lỗi nhà cung cấp.
 
 Các kiểm thử API dùng phản hồi mô phỏng có kiểm soát. Chúng không chứng minh model thật giải đúng hay khóa có quyền sử dụng model. Chỉ xác nhận hoạt động thực tế sau khi có khóa hợp lệ và chạy trực tiếp một đề mẫu.
 

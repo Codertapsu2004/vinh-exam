@@ -30,6 +30,11 @@ test('Groq quota preserves retry time and oversized/invalid image questions do n
  assert.equal(providerError(429,{},'900','groq').retryAfterMs,900000);
  assert.equal(providerError(429,{error:{message:'Tokens per day'}},null,'groq').retryAfterMs,86400000);
  const size=providerError(413,{},null,'groq');assert.equal(size.needsReview,true);assert.equal(size.pause,false);
+ const oversized=providerError(429,{error:{code:'rate_limit_exceeded',message:'SECRET model org_private on tokens per minute (TPM): Limit 8,000, Used 0, Requested 9,125. Please try again in 2s.'}},'2','groq');
+ assert.equal(oversized.code,'AI_INPUT_LIMIT');assert.equal(oversized.pause,false);assert.equal(oversized.needsReview,true);assert.deepEqual(oversized.quota,{bucket:'TPM',limit:8000,used:0,requested:9125});assert.ok(!JSON.stringify(oversized).includes('SECRET'));assert.ok(!JSON.stringify(oversized).includes('org_private'));
+ const temporary=providerError(429,{error:{message:'tokens per minute (TPM): Limit 8000, Used 5000, Requested 4000. Try again in 2.5s.'}},'2.5','groq');assert.equal(temporary.code,'AI_RATE_LIMIT');assert.equal(temporary.retryAfterMs,2500);assert.equal(temporary.pause,true);
+ assert.equal(providerError(429,{error:{message:'tokens per minute (TPM): Limit 8000, Requested 4000. Try again in 850ms.'}},null,'groq').retryAfterMs,1000);
+ assert.equal(providerError(429,{error:{message:'Request too large for this account.'}},'10','groq').pause,false);
  const p=createProvider({env,fetchImpl:async()=>{throw Error('Must not send incomplete images');}});
  await assert.rejects(()=>p.generate({...question,images:[{}]},ctx),e=>e.needsReview);
  await assert.rejects(()=>p.generate(question,ctx,Array(4).fill('data:image/png;base64,AA')),e=>e.code==='AI_IMAGE');
