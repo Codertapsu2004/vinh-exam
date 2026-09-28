@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS ai_solution_items(
 CREATE INDEX IF NOT EXISTS ai_solution_pending ON ai_solution_items(status,updated_at);
 CREATE INDEX IF NOT EXISTS ai_jobs_owner_date ON ai_solution_jobs(owner_id,created_at);
 ALTER TABLE ai_solution_items ADD COLUMN IF NOT EXISTS error_code text NOT NULL DEFAULT '';
+ALTER TABLE ai_solution_items ADD COLUMN IF NOT EXISTS draft jsonb;
 CREATE TABLE IF NOT EXISTS ai_provider_health(
  id integer PRIMARY KEY CHECK(id=1),
  issue jsonb,

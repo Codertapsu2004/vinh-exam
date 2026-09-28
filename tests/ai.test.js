@@ -60,11 +60,14 @@ test('grading and publication use one transaction; AI jobs persist, cache once, 
  const publication={score:false,answers:true,ai:true,explanations:true,timing:'immediate',context:{grade:11,subject:'Vật lí',lesson:'Dao động',scope:'Chưa học đạo hàm'}};
  await api('/teacher/attempts/'+id+'/grade-and-release',{cookie:tc,body:{points:1,publication:{...publication,context:{grade:13}}},status:400});
  assert.equal((await query('SELECT status FROM attempts WHERE id=$1',[id])).rows[0].status,'pending_manual');
- const graded=(await api('/teacher/attempts/'+id+'/grade-and-release',{cookie:tc,body:{points:1,comment:'Cần đọc kỹ đơn vị',publication}})).data;assert.equal(graded.score,3);assert.equal(graded.aiConfigured,false);
+ const privatePublication={...publication,answers:false,explanations:false};
+ const graded=(await api('/teacher/attempts/'+id+'/grade-and-release',{cookie:tc,body:{points:1,comment:'Cần đọc kỹ đơn vị',publication:privatePublication}})).data;assert.equal(graded.score,3);assert.equal(graded.aiConfigured,false);
  const pending=(await api(endpoint,{cookie:tc})).data;assert.equal(pending.job.status,'waiting_connection');assert.equal(pending.context.grade,11);
- const firstJob=pending.job.id;await api(endpoint,{cookie:tc,body:publication});assert.equal((await api(endpoint,{cookie:tc})).data.job.id,firstJob);
+ const firstJob=pending.job.id;await api(endpoint,{cookie:tc,body:privatePublication});assert.equal((await api(endpoint,{cookie:tc})).data.job.id,firstJob);
  const beforeGeneration=(await api('/student/result/'+id+'/published',{cookie:sc})).data;assert.equal(beforeGeneration.result.score,null);assert.ok(!JSON.stringify(beforeGeneration).includes('IMPORTED_UNAPPROVED'));
  enabled=true;assert.equal(await mod.exports.aiSolutions.runOne(),true);assert.equal(await mod.exports.aiSolutions.runOne(),true);assert.equal(await mod.exports.aiSolutions.runOne(),false);assert.equal(generated,2);
+ const hidden=(await api('/student/result/'+id+'/published',{cookie:sc})).data;assert.equal(hidden.review,null);
+ await api(endpoint,{cookie:tc,body:publication});
  const reviewed=(await api('/student/result/'+id+'/published',{cookie:sc})).data;assert.equal(reviewed.review.questions[0].aiSolution.status,'ready');assert.equal(reviewed.review.questions[1].aiSolution,null);assert.equal(reviewed.review.ai.ready,1);assert.equal(reviewed.result.score,null);
  const configured=(await api('/teacher/attempts/'+id+'/grading',{cookie:tc})).data;assert.equal(configured.objectiveScore,2);assert.equal(configured.manualPoints,1);
  await api(endpoint,{cookie:tc,body:{...publication,score:true,ai:false,answers:false,explanations:false}});
