@@ -1,0 +1,51 @@
+// Publication and manual grading have no external service dependency.
+async function ownedReleaseAssignment(id,teacherId,tx=null){
+ const db=tx?tx.query.bind(tx):q;
+ return (await db(`SELECT a.*,c.teacher_id,c.name class_name,e.title exam_title,e.subject,e.questions,e.sections,e.max_score FROM assignments a JOIN classes c ON c.id=a.class_id JOIN assignment_exam_versions e ON e.assignment_id=a.id WHERE a.id=$1 AND c.teacher_id=$2 ${tx?'FOR UPDATE OF a':''}`,[id,teacherId])).rows[0];
+}
+function resultPolicy(body,a){
+ const p={score:body.score??a.show_score,answers:body.answers??a.show_answers,explanations:body.explanations??a.show_explanations,timing:body.timing||'immediate'};
+ if(!['immediate','after_close'].includes(p.timing)||['score','answers','explanations'].some(k=>typeof p[k]!=='boolean'))throw Object.assign(Error('Lựa chọn công bố không hợp lệ.'),{status:400});
+ p.explanations=p.answers&&p.explanations;return p;
+}
+async function applyResultPolicy(tx,a,p){
+ await tx.query('UPDATE assignments SET show_score=$1,score_release=$2,show_answers=$3,answer_release=$4,show_explanations=$5,ai_enabled=false WHERE id=$6',[p.score,p.score?p.timing:'manual',p.answers,p.answers?p.timing:'manual',p.explanations,a.id]);
+}
+function releaseInfo(a){return {id:a.id,title:a.title,showScore:a.show_score,showAnswers:a.show_answers,showExplanations:a.show_explanations,scoreMode:a.score_release,answerMode:a.answer_release,closeAt:a.close_at};}
+app.get('/api/teacher/assignments/:id/release',auth,role('teacher'),async(req,res,next)=>{try{
+ const a=await ownedReleaseAssignment(req.params.id,req.user.id);if(!a)return res.status(404).json({message:'Không tìm thấy bài giao'});
+ const counts=(await q("SELECT count(*) FILTER(WHERE status='graded')::int graded,count(*) FILTER(WHERE status='pending_manual')::int pending FROM attempts WHERE assignment_id=$1",[a.id])).rows[0];
+ res.json({assignment:releaseInfo(a),counts});
+}catch(e){next(e)}});
+app.post('/api/teacher/assignments/:id/release',auth,role('teacher'),async(req,res,next)=>{
+ const tx=await pool.connect();try{await tx.query('BEGIN');const a=await ownedReleaseAssignment(req.params.id,req.user.id,tx);
+ if(!a){await tx.query('ROLLBACK');return res.status(404).json({message:'Không tìm thấy bài giao'});}
+ const policy=resultPolicy(req.body,a);await applyResultPolicy(tx,a,policy);await tx.query('COMMIT');await audit(req.user.id,'assignment.results_released',{assignmentId:a.id,...policy});res.json({ok:true});
+ }catch(e){await tx.query('ROLLBACK').catch(()=>{});if(e.status)return res.status(e.status).json({message:e.message});next(e)}finally{tx.release()}
+});
+app.get('/api/teacher/attempts/:id/grading',auth,role('teacher'),async(req,res,next)=>{try{
+ const attempt=(await q(`SELECT at.*,u.name student_name FROM attempts at JOIN users u ON u.id=at.student_id JOIN assignments a ON a.id=at.assignment_id JOIN classes c ON c.id=a.class_id WHERE at.id=$1 AND c.teacher_id=$2`,[req.params.id,req.user.id])).rows[0];
+ if(!attempt)return res.status(404).json({message:'Không tìm thấy bài làm'});
+ const a=await ownedReleaseAssignment(attempt.assignment_id,req.user.id);
+ const objectiveScore=gradeQuestions(a.questions.filter(x=>x.type!=='essay'),attempt.answers||{}).score,maxManual=a.questions.filter(x=>x.type==='essay').reduce((n,x)=>n+Number(x.points||0),0);
+ res.json({attempt:{...attempt,questions:a.questions,sections:a.sections,exam_title:a.exam_title},objectiveScore,maxManual,maxScore:Number(a.max_score),manualPoints:attempt.status==='graded'?Math.max(0,Number(attempt.score)-objectiveScore):0,release:{assignment:releaseInfo(a)}});
+}catch(e){next(e)}});
+app.post('/api/teacher/attempts/:id/grade-and-release',auth,role('teacher'),async(req,res,next)=>{
+ const tx=await pool.connect();try{
+  await tx.query('BEGIN');const ref=(await tx.query('SELECT assignment_id FROM attempts WHERE id=$1',[req.params.id])).rows[0];
+  const a=ref&&await ownedReleaseAssignment(ref.assignment_id,req.user.id,tx);if(!a){await tx.query('ROLLBACK');return res.status(404).json({message:'Không tìm thấy bài làm'});}
+  const attempt=(await tx.query("SELECT * FROM attempts WHERE id=$1 AND status IN('pending_manual','graded') FOR UPDATE",[req.params.id])).rows[0];if(!attempt){await tx.query('ROLLBACK');return res.status(409).json({message:'Học sinh chưa nộp bài.'});}
+  const essays=a.questions.filter(x=>x.type==='essay'),max=essays.reduce((n,x)=>n+Number(x.points||0),0);let manual=Number(req.body.points),scores={};
+  if(req.body.scores!==undefined){
+   const raw=req.body.scores;if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(id=>!essays.some(x=>x.id===id)))throw Object.assign(Error('Danh sách câu chấm không hợp lệ.'),{status:400});
+   for(const item of essays){const value=raw[item.id];if(value===null||value===''||value===undefined||!Number.isFinite(Number(value))||Number(value)<0||Number(value)>Number(item.points))throw Object.assign(Error(`Điểm câu tự luận phải từ 0 đến ${item.points}.`),{status:400});scores[item.id]=+Number(value).toFixed(4);}
+   manual=Object.values(scores).reduce((s,x)=>s+x,0);
+  }
+  if(!Number.isFinite(manual)||manual<0||manual>max+0.00001)throw Object.assign(Error(`Điểm tự luận cần từ 0 đến ${max}.`),{status:400});
+  const publication=req.body.publication?resultPolicy(req.body.publication,a):null;
+  const objective=gradeQuestions(a.questions.filter(x=>x.type!=='essay'),attempt.answers||{}).score,total=+Math.min(Number(a.max_score),objective+manual).toFixed(2);
+  await tx.query("UPDATE attempts SET score=$1,status='graded',manual_comment=$2,manual_scores=$3 WHERE id=$4",[total,String(req.body.comment||'').slice(0,10000),JSON.stringify(scores),attempt.id]);
+  if(publication)await applyResultPolicy(tx,a,publication);await tx.query('COMMIT');
+  await audit(req.user.id,'attempt.graded_with_publication',{attemptId:attempt.id,assignmentId:a.id,score:total,publication});res.json({ok:true,score:total,assignmentId:a.id});
+ }catch(e){await tx.query('ROLLBACK').catch(()=>{});if(e.status)return res.status(e.status).json({message:e.message});next(e)}finally{tx.release()}
+});

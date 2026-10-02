@@ -40,5 +40,26 @@
     const context=before.join('\n'),time=context.match(/thời\s*gian(?:\s*làm\s*bài)?\s*[:：]?\s*(\d{1,4})\s*phút/i),subject=context.match(/(?:môn\s*[:：]?\s*)?(Toán|Vật\s*l[iíý])(?:\s*(?:lớp\s*)?(\d{1,2}))?/i);
     return {title,subject:subject?[subject[1],subject[2]].filter(Boolean).join(' '):'',duration:time?Number(time[1]):45,instructions:before.filter(s=>/^(?:thời\s*gian|cấu\s*trúc|hướng\s*dẫn)/i.test(s)).join('\n'),preamble:context};
   }
-  return {settings,simulation,simulationTypes,questionErrors,headerQuestion,metadata};
+  function sections(questions,raw=[]){
+    if(!Array.isArray(raw)||raw.length>30)throw Error('Đề có tối đa 30 phần.');
+    const used=new Set(),ids=new Set();
+    const result=raw.map((s,i)=>{
+      const id=String(s.id||`sec-${i+1}`);if(!/^[\w-]{1,100}$/.test(id)||ids.has(id))throw Error('Mã phần không hợp lệ hoặc trùng.');ids.add(id);
+      const questionIds=(Array.isArray(s.questionIds)?s.questionIds:[]).filter(id=>questions.some(q=>q.id===id));
+      for(const qid of questionIds){if(used.has(qid))throw Error('Một câu hỏi chỉ được thuộc một phần.');used.add(qid);}
+      return {id,title:String(s.title||`Phần ${i+1}`).trim().slice(0,200),kind:s.kind||'mixed',questionIds,points:+questionIds.reduce((sum,id)=>sum+Number(questions.find(q=>q.id===id).points),0).toFixed(4)};
+    });
+    const ungrouped=questions.filter(q=>!used.has(q.id));
+    if(ungrouped.length){let id='sec-other';while(ids.has(id))id+='-1';result.push({id,title:result.length?'Câu hỏi chưa phân phần':'Phần I. Câu hỏi',kind:'mixed',questionIds:ungrouped.map(q=>q.id),points:+ungrouped.reduce((s,q)=>s+Number(q.points),0).toFixed(4)});}
+    for(const s of result)for(const id of s.questionIds)questions.find(q=>q.id===id).sectionId=s.id;
+    return result;
+  }
+  function distributePoints(questions,ids,total){
+    const selected=ids.map(id=>questions.find(q=>q.id===id));const units=Math.round(Number(total)*10000);
+    if(!selected.length||selected.some(q=>!q)||new Set(ids).size!==ids.length||!Number.isFinite(units)||units<selected.length||units>10000000)throw Error('Điểm phần phải lớn hơn 0, đủ chia cho các câu và không quá 1000.');
+    const base=Math.floor(units/selected.length),remainder=units%selected.length;
+    selected.forEach((q,i)=>q.points=(base+(i<remainder?1:0))/10000);
+    return units/10000;
+  }
+  return {settings,simulation,simulationTypes,questionErrors,headerQuestion,metadata,sections,distributePoints};
 });

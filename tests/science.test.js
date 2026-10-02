@@ -84,17 +84,9 @@ test('published review keeps answer labels, images, escaped text and teacher pub
   } finally { c.dom.window.close(); }
 });
 
-test('reduced motion keeps public exercise and solution usable without writes or animations', async () => {
-  const c = client(async url => { throw Error('Exercise must not call ' + url); }, true);
-  try {
-    await tick(); c.document.getElementById('scienceTry').focus(); c.document.getElementById('scienceTry').click();
-    const input = c.document.querySelector('[name=scienceDemoAnswer][value="5"]'); input.checked = true;
-    input.dispatchEvent(new c.window.Event('change', { bubbles: true }));
-    assert.match(c.document.getElementById('scienceDemoStatus').textContent, /Chính xác/);
-    const details = c.document.querySelector('.science-demo-solution'); details.open = true;
-    details.dispatchEvent(new c.window.Event('toggle')); await tick();
-    assert.match(details.textContent, /BC = 5 cm/); assert.equal(c.motions.length, 0);
-    c.window.closeModal(); assert.equal(c.document.querySelector('.modal'), null);
-    assert.equal(c.document.activeElement.id, 'scienceTry');
-  } finally { c.dom.window.close(); }
+test('reduced motion keeps real question feedback usable without animations', async () => {
+ const c=client(async()=>response({}),true);
+ try{await tick();c.window.eval("ME={role:'student',name:'Thử'};page('Toán','','', '<div id=questions>'+renderExamQuestion({id:\'q\',type:\'single\',text:\'2+2=?\',options:[\'3\',\'4\'],points:1},0)+'</div>')");
+ const input=c.document.querySelector('input[value="1"]');input.checked=true;input.dispatchEvent(new c.window.Event('change',{bubbles:true}));await tick();assert.equal(c.motions.length,0);assert.equal(input.checked,true);assert.equal(c.document.getElementById('scienceTry'),null);
+ }finally{c.dom.window.close();}
 });

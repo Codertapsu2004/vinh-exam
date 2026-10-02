@@ -1,6 +1,6 @@
-# VINH EXAM · PLAY
+# VINH EXAM · Không gian dạy và học
 
-Website tạo đề, giao bài, làm bài và chấm điểm bằng tiếng Việt. Giao diện PLAY dùng nền kem, xanh lime, tím nhạt và cam đào. Dữ liệu tài khoản, lớp và bài làm lưu trong PostgreSQL.
+Website tạo đề, giao bài, làm bài và chấm điểm bằng tiếng Việt. Giao diện sáng, nền trắng–xám và điểm nhấn xanh, dành cho giáo viên và học sinh. Dữ liệu tài khoản, lớp và bài làm lưu trong PostgreSQL.
 
 ## Chạy ứng dụng
 
@@ -25,4 +25,4 @@ npm run build
 
 Các kiểm thử dùng JSDOM, API Express thật và PostgreSQL biệt lập qua PGlite. Không kết nối cơ sở dữ liệu production. Các tệp Word/PDF trong kiểm thử là dữ liệu tự tạo. PGlite chạy một kết nối và không thay thế kiểm thử tải nhiều người trên PostgreSQL production.
 
-Chi tiết thay đổi và bước kiểm tra trước triển khai: [docs/PLAY-REVIEW.md](docs/PLAY-REVIEW.md).
+Chi tiết phiên bản giao diện và nghiệp vụ: [docs/WORKSPACE-REVIEW.md](docs/WORKSPACE-REVIEW.md).

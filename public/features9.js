@@ -4,6 +4,7 @@ const baseOpenAssignmentModalV9=openAssignmentModal;
 let serverOffsetV9=0;
 const nowV9=()=>Date.now()+serverOffsetV9;
 const setServerNowV9=iso=>{const t=Date.parse(iso);if(Number.isFinite(t))serverOffsetV9=t-Date.now()};
+window.syncActivityClock=setServerNowV9;
 const kindLabelV9=k=>k==='homework'?'Bài tập':'Kiểm tra';
 const untilV9=ms=>{const s=Math.max(0,Math.ceil(ms/1000));if(s<60)return `${s} giây`;const m=Math.ceil(s/60);if(m<60)return `${m} phút`;const h=Math.ceil(m/60);if(h<24)return `${h} giờ`;return `${Math.ceil(h/24)} ngày`};
 const activityStateV9=x=>{if(x.attempt_id&&x.status==='in_progress')return{key:'progress',label:'Đang làm'};if(x.attempt_id&&x.status==='pending_manual')return{key:'pending',label:'Chờ chấm'};if(x.attempt_id&&x.status==='graded')return{key:'graded',label:'Đã chấm'};const n=nowV9(),o=Date.parse(x.open_at),c=Date.parse(x.close_at);if(n<o)return{key:'upcoming',label:`Mở sau ${untilV9(o-n)}`};if(n>c)return{key:'closed',label:'Đã đóng'};return{key:'open',label:'Đang mở'}};

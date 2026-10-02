@@ -129,6 +129,31 @@ test('real API workflow on isolated PostgreSQL: register, publish, assign, save,
     else assert.match(item.extracted_text,/VINH EXAM/);
     const original=await fetch(base+'/api/assets/'+item.asset_id,{headers:{Cookie:tc}});assert.ok(Buffer.from(await original.arrayBuffer()).equals(buffer),'Original file bytes must be preserved');
   }
+  // Per-question grading is bounded, owned, repeatable and released only by explicit policy.
+  const essayQuestions=[{id:'obj',type:'single',text:'2+2=?',options:['3','4'],answer:1,points:5},{id:'essay1',type:'essay',text:'Giải thích cách làm',points:2,explanation:'Nêu lập luận.'},{id:'essay2',type:'essay',text:'Đánh giá kết quả',points:3}];
+  const essayExam=(await request('/teacher/exams',{cookie:tc,body:{title:'Đề chấm từng câu',subject:'Toán',duration:30,questions:essayQuestions}})).exam;
+  await request('/teacher/exams/'+essayExam.id+'/publish',{cookie:tc,body:{}});
+  const essayAssignment=(await request('/teacher/assignments-v9',{cookie:tc,body:{classId:cls.id,examId:essayExam.id,openAt:new Date(Date.now()-1000).toISOString(),closeAt:new Date(Date.now()+3600000).toISOString()}})).assignment;
+  const essayAttempt=(await request('/student/start-v9/'+essayAssignment.id,{cookie:sc,body:{}})).attemptId;
+  await request('/student/attempt/'+essayAttempt+'/save',{cookie:sc,body:{rowVersion:0,answers:{obj:1,essay1:'Lập luận',essay2:'Kết luận'}}});
+  await request('/student/attempt/'+essayAttempt+'/submit',{cookie:sc,body:{rowVersion:1}});
+  await request('/teacher/attempts/'+essayAttempt+'/grade-and-release',{cookie:tc,body:{scores:{essay1:3,essay2:1}},status:400});
+  await request('/teacher/attempts/'+essayAttempt+'/grade-and-release',{cookie:tc,body:{scores:{essay1:1}},status:400});
+  await request('/teacher/attempts/'+essayAttempt+'/grade-and-release',{cookie:sc,body:{scores:{essay1:1,essay2:2}},status:403});
+  const stranger=await request('/auth/register',{body:{role:'teacher',name:'Giáo viên khác',login:'teacher-other',password:'TestOnly123',subjects:['Toán']},status:201,raw:true});
+  await request('/teacher/attempts/'+essayAttempt+'/grading',{cookie:stranger.cookie,status:404});
+  const gradeUrl='/teacher/attempts/'+essayAttempt+'/grade-and-release';
+  assert.equal((await request(gradeUrl,{cookie:tc,body:{scores:{essay1:1,essay2:3},comment:'Rõ ràng'}})).score,9);
+  assert.equal((await request('/student/result/'+essayAttempt+'/published',{cookie:sc})).result.score,null);
+  assert.equal((await request(gradeUrl,{cookie:tc,body:{scores:{essay1:1,essay2:2},publication:{score:true,answers:false,explanations:false,timing:'immediate'}}})).score,8);
+  const scoreOnly=await request('/student/result/'+essayAttempt+'/published',{cookie:sc});assert.equal(Number(scoreOnly.result.score),8);assert.equal(scoreOnly.review,null);assert.deepEqual(scoreOnly.result.manualScores,{essay1:1,essay2:2});
+  await request('/teacher/assignments/'+essayAssignment.id+'/release',{cookie:tc,body:{score:true,answers:true,explanations:true,timing:'after_close'}});
+  assert.equal((await request('/student/result/'+essayAttempt+'/published',{cookie:sc})).review,null);
+  await query("UPDATE assignments SET close_at=now()-interval '1 second' WHERE id=$1",[essayAssignment.id]);
+  assert.equal((await request('/student/result/'+essayAttempt+'/published',{cookie:sc})).review.questions[1].explanation,'Nêu lập luận.');
+  const release=await request('/teacher/assignments/'+essayAssignment.id+'/release',{cookie:tc});assert.equal(release.job,undefined);assert.equal(release.aiConfigured,undefined);
+  assert.equal((await fetch(base+'/api/teacher/assignments/'+essayAssignment.id+'/ai-retry',{method:'POST',headers:{Cookie:tc}})).status,404);
+  assert.equal((await query('SELECT count(*)::int n FROM ai_solution_jobs')).rows[0].n,0);
   const html=await (await fetch(base)).text();assert.equal((html.match(/<script /g)||[]).length,1);assert.equal((html.match(/rel="stylesheet"/g)||[]).length,1);
   const bundle=html.match(/src="(\/dist\/play\.[a-f0-9]+\.js)"/)[1];const asset=await fetch(base+bundle,{headers:{'Accept-Encoding':'gzip'}});
   assert.equal(asset.headers.get('content-encoding'),'gzip');assert.match(asset.headers.get('content-type'),/javascript/);assert.match(asset.headers.get('cache-control'),/immutable/);assert.ok((await asset.text()).includes('createAnswerSaver'));

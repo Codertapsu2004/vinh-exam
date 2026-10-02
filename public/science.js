@@ -68,7 +68,7 @@
     return `<div class="science-review-list">${review.questions.map((question, index) => {
       const answer = review.answers?.[question.id];
       const [label, status] = states[outcome(question, answer)];
-      return `<article class="science-review-question"><div class="science-review-heading"><span class="science-question-index">Câu ${index + 1}</span><span class="badge ${status}">${label}</span></div><h3>${esc(question.text)}</h3>${gallery(question)}<div class="science-answer-comparison"><div><span>Bài làm của bạn</span><p>${esc(valueText(question, answer))}</p></div>${question.answer !== undefined && question.type !== 'essay' ? `<div><span>Đáp án</span><p>${esc(valueText(question, question.answer))}</p></div>` : ''}</div>${policy.showExplanations && window.renderAISolution ? renderAISolution(question) : ''}${policy.showExplanations && !question.aiSolution && question.simulation && window.renderQuestionSimulation ? renderQuestionSimulation(question.simulation) : ''}${policy.showExplanations && !question.aiSolution && question.explanation ? `<details class="science-solution"><summary><span>Lời giải</span><span class="science-summary-action">Mở / thu gọn <span aria-hidden="true">＋</span></span></summary><div class="science-solution-body">${constructionMark()}<div class="science-explanation">${esc(question.explanation)}</div></div></details>` : ''}</article>`;
+      return `<article class="science-review-question"><div class="science-review-heading"><span class="science-question-index">Câu ${index + 1}</span><span class="badge ${status}">${label}</span></div><h3>${esc(question.text)}</h3>${gallery(question)}<div class="science-answer-comparison"><div><span>Bài làm của bạn</span><p>${esc(valueText(question, answer))}</p></div>${question.answer !== undefined && question.type !== 'essay' ? `<div><span>Đáp án</span><p>${esc(valueText(question, question.answer))}</p></div>` : ''}</div>${policy.showExplanations && question.simulation && window.renderQuestionSimulation ? renderQuestionSimulation(question.simulation) : ''}${policy.showExplanations && question.explanation ? `<details class="science-solution"><summary><span>Lời giải</span><span class="science-summary-action">Mở / thu gọn <span aria-hidden="true">＋</span></span></summary><div class="science-solution-body">${constructionMark()}<div class="science-explanation">${esc(question.explanation)}</div></div></details>` : ''}</article>`;
     }).join('')}</div>`;
   };
   document.addEventListener('toggle', event => {
@@ -108,20 +108,6 @@
     }
   };
 
-  // A self-contained public exercise demonstrates the same two interaction patterns.
-  // It never creates an attempt, writes a score or calls an authenticated endpoint.
-  const art = document.querySelector('.login-hero .paper-art');
-  if (art) {
-    art.outerHTML = `<section class="science-intro-board" aria-label="Trải nghiệm Toán và Vật lí">${scene()}<div class="science-intro-foot"><span>Hiểu từ những điều nhỏ.</span><button type="button" class="btn ghost" id="scienceTry">Thử một câu Toán ↗</button></div></section>`;
-    document.getElementById('scienceTry').addEventListener('click', openExperience);
-  }
-  function openExperience() {
-    modal('Một phút cùng hình học', `<div class="science-demo"><div class="science-demo-caption">Bài trải nghiệm · Không lưu điểm</div><h3>Tam giác ABC vuông tại A, AB = 3 cm, AC = 4 cm. Cạnh BC dài bao nhiêu?</h3><div class="science-demo-answers">${[5, 7, 12].map((number, index) => `<label class="option science-answer"><input type="radio" name="scienceDemoAnswer" value="${number}"><span class="science-answer-letter" aria-hidden="true">${String.fromCharCode(65 + index)}</span><span>${number} cm</span></label>`).join('')}</div><p id="scienceDemoStatus" role="status" aria-live="polite">Chọn một đáp án để kiểm tra.</p><details class="science-solution science-demo-solution"><summary><span>Xem hình và lời giải</span><span aria-hidden="true">＋</span></summary><div class="science-solution-body science-demo-grid"><figure class="science-demo-figure"><svg viewBox="0 0 280 230" role="img" aria-label="Tam giác ABC vuông tại A, hai cạnh góc vuông dài 3 cm và 4 cm, cạnh huyền dài 5 cm"><path class="science-axis" d="M40 25V190H250"/><path class="science-draw-path" pathLength="1" d="M48 38V182H240Z"/><path class="science-draw-path science-fine" pathLength="1" d="M48 164H66V182"/><text x="30" y="207">A</text><text x="31" y="29">B</text><text x="245" y="203">C</text><text x="18" y="114">3</text><text x="138" y="209">4</text><text x="159" y="98">5</text></svg><figcaption>Độ dài các cạnh: cm</figcaption></figure><ol class="science-demo-steps"><li><span>Tam giác vuông tại A</span><strong>BC² = AB² + AC²</strong></li><li><span>Thay độ dài hai cạnh</span><strong>BC² = 3² + 4² = 25</strong></li><li><span>Cạnh huyền có độ dài</span><strong>BC = 5 cm</strong></li></ol></div></details></div>`, `<button type="button" class="btn primary" onclick="closeModal()">Xong</button>`);
-    document.querySelectorAll('[name=scienceDemoAnswer]').forEach(input => input.addEventListener('change', () => {
-      wave(input.closest('.option'));
-      document.getElementById('scienceDemoStatus').textContent = input.value === '5' ? 'Chính xác. Mở lời giải để xem cách tính.' : 'Chưa đúng. Hãy dùng định lí Pythagore hoặc mở lời giải bên dưới.';
-    }));
-  }
   const baseClose = closeModal;
   closeModal = function () { stopMotion(); return baseClose(); };
 })();

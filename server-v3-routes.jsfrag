@@ -62,6 +62,7 @@ app.post('/api/teacher/imports', auth, role('teacher'), uploadV3.single('file'),
     if(kind==='docx'){
       const result=await mammothV3.convertToHtml({buffer:req.file.buffer},{convertImage:mammothV3.images.imgElement(async img=>({src:`data:${img.contentType};base64,${await img.read('base64')}`}))});
       html=result.value||''; text=(await mammothV3.extractRawText({buffer:req.file.buffer})).value||''; questions=parseExamStructureV6(text).questions;
+      await require('./lib/docx-answers')(req.file.buffer,questions);
       await retainDocxImages(html,questions,req.user.id);
       warnings=(result.messages||[]).map(x=>x.message).slice(0,30);
       if(!questions.length) warnings.push('Không nhận diện chắc chắn cấu trúc câu hỏi. Tệp gốc vẫn được giữ để giáo viên rà soát thủ công.');

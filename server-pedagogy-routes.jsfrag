@@ -25,8 +25,7 @@ app.put('/api/teacher/exams/:id',auth,role('teacher'),async(req,res,next)=>{
     const title=String(req.body.title||'').trim();if(!title){await client.query('ROLLBACK');return res.status(400).json({message:'Tên đề không được để trống.'});}
     for(const question of questions)question.images=await normalizeBankImagesV5(question.images,req.user.id);
     await client.query(snapshotSql,[exam.id]);
-    const ids=new Set(questions.map(x=>x.id));
-    const sections=(Array.isArray(req.body.sections)?req.body.sections:exam.sections||[]).map(s=>({...s,questionIds:(s.questionIds||[]).filter(id=>ids.has(id))}));
+    let sections;try{sections=ExamTools.sections(questions,req.body.sections||exam.sections||[]);}catch(e){await client.query('ROLLBACK');return res.status(400).json({message:e.message});}
     const max=+questions.reduce((sum,x)=>sum+x.points,0).toFixed(4);
     const row=(await client.query(`UPDATE exams SET title=$1,subject=$2,duration=$3,max_score=$4,questions=$5,sections=$6,exam_config=$7,edit_revision=edit_revision+1,updated_at=now() WHERE id=$8 RETURNING *`,[title.slice(0,500),String(req.body.subject||'').slice(0,200),config.duration,max||10,JSON.stringify(questions),JSON.stringify(sections),JSON.stringify(config),exam.id])).rows[0];
     const frozen=(await client.query('SELECT count(*)::int n FROM assignments WHERE exam_id=$1 AND exam_snapshot IS NOT NULL',[exam.id])).rows[0].n;
@@ -111,16 +110,18 @@ function safeStudentQuestion(item){
 }
 function orderedQuestions(row){const qs=row.questions||[],order=row.question_order||[];return order.length?order.map(id=>qs.find(x=>x.id===id)).filter(Boolean):qs;}
 app.get('/api/student/attempt/:id',auth,role('student'),async(req,res,next)=>{try{
-  await finalizeExpiredAttempts();const x=(await q(`SELECT at.*,a.show_score,a.score_release,a.close_at,a.title,a.instructions,e.title exam_title,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`,[req.params.id,req.user.id])).rows[0];if(!x)return res.status(404).json({message:'Không tìm thấy lượt làm'});
-  res.json({attempt:{id:x.id,status:x.status,attemptNo:x.attempt_no,deadlineAt:x.deadline_at,lastSavedAt:x.last_saved_at,rowVersion:x.row_version,serverNow:new Date().toISOString(),answers:x.answers||{},score:releaseOpen(x.show_score,x.score_release,x.close_at)&&x.status==='graded'?x.score:null,title:x.title,examTitle:x.exam_title,instructions:x.instructions,questions:orderedQuestions(x).map(safeStudentQuestion)}});
+  await finalizeExpiredAttempts();const x=(await q(`SELECT at.*,a.show_score,a.score_release,a.close_at,a.title,a.instructions,e.title exam_title,e.questions,e.sections FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`,[req.params.id,req.user.id])).rows[0];if(!x)return res.status(404).json({message:'Không tìm thấy lượt làm'});
+  res.json({attempt:{id:x.id,status:x.status,attemptNo:x.attempt_no,deadlineAt:x.deadline_at,lastSavedAt:x.last_saved_at,rowVersion:x.row_version,serverNow:new Date().toISOString(),answers:x.answers||{},score:releaseOpen(x.show_score,x.score_release,x.close_at)&&x.status==='graded'?x.score:null,title:x.title,examTitle:x.exam_title,instructions:x.instructions,sections:(x.sections||[]).map(s=>({id:s.id,title:s.title,points:s.points,questionIds:s.questionIds})),questions:orderedQuestions(x).map(safeStudentQuestion)}});
 }catch(e){next(e)}});
 async function publishedPayload(id,studentId){
-  const row=(await q(`SELECT at.*,a.title,a.close_at,a.max_attempts,a.ai_enabled,a.ai_job_id,a.prepared_solution_id,a.show_score,a.show_answers,a.show_explanations,a.score_release,a.answer_release,e.title exam_title,e.max_score,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`,[id,studentId])).rows[0];if(!row)return null;
+  const row=(await q(`SELECT at.*,a.title,a.close_at,a.max_attempts,a.show_score,a.show_answers,a.show_explanations,a.score_release,a.answer_release,e.title exam_title,e.max_score,e.questions FROM attempts at JOIN assignments a ON a.id=at.assignment_id JOIN exams e ON e.id=a.exam_id WHERE at.id=$1 AND at.student_id=$2`,[id,studentId])).rows[0];if(!row)return null;
   const policy={showScore:releaseOpen(row.show_score,row.score_release,row.close_at),showAnswers:releaseOpen(row.show_answers,row.answer_release,row.close_at),showExplanations:row.show_explanations,scoreMode:row.show_score?row.score_release:'manual',answerMode:row.show_answers?row.answer_release:'manual',closeAt:row.close_at};
   policy.showExplanations=policy.showExplanations&&policy.showAnswers;
   const result={id:row.id,status:row.status,submitted_at:row.submitted_at,manual_comment:row.manual_comment,title:row.title,exam_title:row.exam_title,max_score:row.max_score,score:policy.showScore&&row.status==='graded'?row.score:null,scorePublished:policy.showScore,assignmentId:row.assignment_id,attemptNo:row.attempt_no,maxAttempts:row.max_attempts};
   const review=row.status==='graded'&&policy.showAnswers?{answers:row.answers,questions:orderedQuestions(row).map(item=>policy.showExplanations?item:{...item,explanation:undefined,simulation:undefined})}:null;
-  return preparedSolutions.enrich(row,await aiSolutions.enrich(row,{result,review,policy}));
+  if(review)review.questions=review.questions.map(({aiSolution,aiState,...question})=>question);
+  if(policy.showScore&&row.status==='graded')result.manualScores=row.manual_scores||{};
+  return {result,review,policy};
 }
 app.get(['/api/student/result/:id/published','/api/student/result/:id'],auth,role('student'),async(req,res,next)=>{try{await finalizeExpiredAttempts();const out=await publishedPayload(req.params.id,req.user.id);if(!out)return res.status(404).json({message:'Không tìm thấy kết quả'});res.json(out)}catch(e){next(e)}});
 app.get('/api/student/result/:id/review',auth,role('student'),async(req,res,next)=>{try{const out=await publishedPayload(req.params.id,req.user.id);if(!out)return res.status(404).json({message:'Không tìm thấy kết quả'});if(!out.review)return res.status(403).json({message:'Bài chưa chấm xong hoặc đáp án chưa được công bố.'});res.json(out.review)}catch(e){next(e)}});
